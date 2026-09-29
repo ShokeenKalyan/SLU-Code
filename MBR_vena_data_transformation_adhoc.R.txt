@@ -1,0 +1,466 @@
+
+# analysis_year = 2021
+# analysis_qtr = 3
+# analysis_val_flag=1
+# 
+# years_analyzed = 25
+#Importing data of Incurred Triangle
+#incurred_raw = read.csv("/mnt_delfi0002_actuarial/Base Ultimate Calculation Template/MBR Development/MBR Phase 4/MBR Stored Procedures/Incurred_Loss.csv",header = TRUE)
+
+# Function to transform Incurred and Paid trinagle from Vena extract table
+
+fn_to_transform_incurred_paid = function(incurred_raw,res_year,res_qtr,val_flag,vector_name){
+# incurred_raw_copy = incurred_raw
+# incurred_raw = incurred_raw_copy
+names(incurred_raw) = c("Reserving_Quarter","Product","Vector",	"Branch",	"Exposure_Year",	"AY / UY",	"Development_Period",	"Measure",	"Version",	"_PLOB",	"Type",	"value")
+incurred_raw = select(incurred_raw,-c("_PLOB","Branch"))
+
+distinct_product = list(unique(incurred_raw$Reserve_Class))
+reserving_qtr = unique(incurred_raw$Reserving_Quarter)
+version = "Baseline-H1"
+
+# To check distinct quarter in data
+if (length(reserving_qtr)>1){
+  print("error: More than 1 quarter present in data ")
+}
+
+# Check for null values
+if ((is.null(incurred_raw$Vector) == TRUE | is.null(incurred_raw$value ) == TRUE)){
+  print("error : NUll values found in Data")
+}
+
+# to check only vector present in data
+if (unique(incurred_raw$Vector!=vector_name)){
+  print(paste("error : Vector other than",vector_name,"is present in data"))
+}
+
+# To check incurred from YQ triangle and vena data is equal (To be completed)
+
+incurred = incurred_raw
+
+incurred = filter(incurred,Development_Period!="Adj Period" & Type=="ATT")
+incurred$value = as.numeric(incurred$value)
+incurred_tri = select(incurred,c("Product","Vector","Development_Period","Exposure_Year","Reserving_Quarter","Version","Measure","value")) %>% group_by(Product,Vector,Development_Period,Exposure_Year,Reserving_Quarter,Version,Measure) %>%
+           summarise(Value = sum(value))
+
+
+
+
+incurred_tri$Res_Year = res_year
+incurred_tri$Res_Qtr = res_qtr
+incurred_tri$Val_flag = val_flag
+
+#Profile_mapping = read.csv("/mnt_delfi0002_actuarial/Base Ultimate Calculation Template/MBR Development/MBR Phase 4/MBR Stored Procedures/Profile_mapping.csv",header = TRUE)
+#Profile_mapping = select(Profile_mapping,c("X_Reserving.Quarter" , "X_Product"   ,         "X_Division"  ,        
+#                                           "X_Unit"   ,            "X_Source"     ))
+#names(Profile_mapping) = c('Reserving_Quarter','Product','Division','Unit','Source')
+
+#incurred_tri = left_join(incurred_tri,Profile_mapping, by=c("Product","Reserving_Quarter"))
+
+incurred_tri$Vector = paste(vector_name,"(Att)")
+names(incurred_tri) = c("Product","Vector","Development Period","Exposure Year",
+                        "Reserving Quarter","Version","Measure","Value","res_year","res_qtr","val_flag")
+incurred_tri = select(incurred_tri,c("res_year","res_qtr","val_flag","Product","Vector","Development Period","Exposure Year",
+                                     "Reserving Quarter","Version","Measure","Value"))
+return(incurred_tri)
+}
+
+#abc = fn_to_transform_incurred_paid(incurred_raw,2021,3,1,'Incurred Loss')
+#write.csv(abc,"/mnt_delfi0002_actuarial/Base Ultimate Calculation Template/MBR Development/MBR Phase 4/MBR Stored Procedures/Proc Output Testing/Incurred_output.csv")
+
+
+# Method Selection Proc
+
+#method_raw = read.csv("/mnt_delfi0002_actuarial/Base Ultimate Calculation Template/MBR Development/MBR Phase 4/MBR Stored Procedures/Method_Data Extract.csv",header = TRUE)
+#method_raw = method_raw_extract
+fn_to_transform_method_data = function(method_raw,res_year,res_qtr,val_flag,Ri_type_run){
+method_raw  = method_raw_extract
+names(method_raw) = c("Reserving_Quarter","Product","Vector",	"Branch",	"Exposure_Year",	"AY / UY",	"Development_Period",	"Ri_type",	"Version",	"_PLOB",	"Type","value")
+method_raw = select(method_raw,-c("_PLOB","Branch","AY / UY"))
+
+
+distinct_product = list(unique(method_raw$Reserve_Class))
+reserving_qtr = unique(method_raw$Reserving_Quarter)
+version = unique(method_raw$'Version')
+
+if (length(reserving_qtr)>1){
+  print("error : More than 1 quarter present in data ")
+}
+
+method = method_raw
+vector_list = c('Selected LR Method','Selected Premium Method Name','Selected Ultimate Method','Derived Ultimate Allocation Method','Selected Ultimate Allocation Method','Selected Recovery Ratio Method','Basis for Recovery Ratio Ultimate (Ultimate/IBNR)')
+# To check all 7 vectors present in data
+All_vector_list = c(unique(method$Vector))
+common_vector = Reduce(intersect,list(vector_list,All_vector_list))
+
+if (length(common_vector)!=7){
+  print("error : Required vectors are missing in data")
+}
+
+
+method = filter(method,(Vector %in% vector_list) & is.numeric(value) == FALSE & Type=="ATT" )
+#method = distinct(method)
+method =  method %>% distinct(Reserving_Quarter,Product,Vector,Exposure_Year,Development_Period,Ri_type,Version,Type,.keep_all = TRUE)
+method = spread(method, key=Vector, value=value)
+
+### Adhoc code need to revisit after utility method name vector update ###
+
+# method$'Derived Ultimate Allocation Method' = "a"
+#method$'Selected Recovery Ratio Method' = "a"
+
+
+# To check null values present in Selected Premium Method Name & Selected Ultimate Method
+if (is.null(method$`Selected Premium Method Name`)==TRUE){
+  print("error : Null values are present in Selected Premium Method Name")
+}
+
+if (is.null(method$`Selected Ultimate Method`)==TRUE){
+  print("error : Null values are present in Selected Ultimate Method")
+}
+
+# To check all products have 25 rows
+count_check = method %>% count(Product)
+if (min(count_check$n)!= max(count_check$n)){
+  print("error: 25 rows are not present in data")
+}
+
+method$Res_Year = res_year
+method$Res_Qtr = res_qtr
+method$Val_flag =val_flag
+
+
+# Profile_mapping = read.csv("/mnt_delfi0002_actuarial/Base Ultimate Calculation Template/MBR Development/MBR Phase 4/MBR Stored Procedures/Profile_mapping.csv",header = TRUE)
+# Profile_mapping = select(Profile_mapping,c("X_Reserving.Quarter" , "X_Product"   ,         "X_Division"  ,        
+#                                            "X_Unit"   ,            "X_Source"     ))
+# names(Profile_mapping) = c('Reserving_Quarter','Product','Division','Unit','Source')
+
+#method = left_join(method,Profile_mapping, by=c("Product","Reserving_Quarter"))
+
+
+if(Ri_type_run=="Both"){
+method = select(method,c("Reserving_Quarter","Product","Exposure_Year","Development_Period",
+                         "Ri_type","Version","Type","Selected LR Method","Selected Premium Method Name",
+                         'Selected Ultimate Allocation Method', "Selected Ultimate Method",
+                         'Derived Ultimate Allocation Method',"Selected Recovery Ratio Method","Basis for Recovery Ratio Ultimate (Ultimate/IBNR)","Res_Year","Res_Qtr","Val_flag"))
+names(method) = c("Reserving Quarter","Product","Exposure Year","Development Period",
+                  "Ri_type","Version","Type","Selected LR Method (Att)","Selected Premium Method Name",
+                  'Selected Ultimate Allocation Method', "Selected Ultimate Method (Att)",
+'Derived Ultimate Allocation Method',"Selected Recovery Ratio Method","Basis for Recovery Ratio Ultimate (Ultimate/IBNR)","res_year","res_qtr","val_flag")
+
+method = select(method,c("res_year","res_qtr","val_flag","Reserving Quarter","Version","Product","Exposure Year",
+                         "Development Period","Ri_type","Selected LR Method (Att)","Selected Premium Method Name",
+                         "Selected Ultimate Method (Att)",'Derived Ultimate Allocation Method','Selected Ultimate Allocation Method',"Selected Recovery Ratio Method","Basis for Recovery Ratio Ultimate (Ultimate/IBNR)"))
+
+ }else{
+
+   method$'Selected Recovery Ratio Method' = "NA"
+   method$"Basis for Recovery Ratio Ultimate (Ultimate/IBNR)"  = "NA"
+
+
+   method = select(method,c("Reserving_Quarter","Product","Exposure_Year","Development_Period",
+                            "Ri_type","Version","Type","Selected LR Method","Selected Premium Method Name",
+                            'Selected Ultimate Allocation Method', "Selected Ultimate Method",
+                            'Derived Ultimate Allocation Method',"Selected Recovery Ratio Method","Basis for Recovery Ratio Ultimate (Ultimate/IBNR)","Res_Year","Res_Qtr","Val_flag"))
+
+   names(method) = c("Reserving Quarter","Product","Exposure Year","Development Period",
+   "Ri_type","Version","Type","Selected LR Method (Att)","Selected Premium Method Name",
+   'Selected Ultimate Allocation Method', "Selected Ultimate Method (Att)",
+   'Derived Ultimate Allocation Method',"Selected Recovery Ratio Method","Basis for Recovery Ratio Ultimate (Ultimate/IBNR)","res_year","res_qtr","val_flag")
+
+ }
+
+
+# dummy = filter(method_raw_extract,method_raw_extract$'_Vector' =='MBR Ultimate Selected Flag' & method_raw_extract$'_Value'=='Yes')
+# dummy = select(dummy,c('_Reserve Class','_Value'))
+# names(dummy) = c('Product','MBR Ultimate Selected Flag')
+# method = left_join(method,dummy,by = 'Product')
+# method$"Exposure Year" = as.numeric(method$"Exposure Year")
+# method = mutate(method,"MBR Ultimate Selected Flag" = ifelse(is.na(method$"MBR Ultimate Selected Flag"),"No",method$"MBR Ultimate Selected Flag"))
+method$"Exposure Year" = as.numeric(method$"Exposure Year")
+method$'MBR Ultimate Selected Flag' = "No"
+
+method = select(method,c("res_year","res_qtr","val_flag","Reserving Quarter","Version","Product","Exposure Year",
+                         "Development Period","Ri_type","Selected LR Method (Att)","Selected Premium Method Name",
+                         "Selected Ultimate Method (Att)",'Derived Ultimate Allocation Method','Selected Ultimate Allocation Method','MBR Ultimate Selected Flag',"Selected Recovery Ratio Method","Basis for Recovery Ratio Ultimate (Ultimate/IBNR)"))
+
+
+return(method)
+}
+
+#dummy = fn_to_transform_method_data(method_raw,2021,3,1)
+#write.csv(dummy,"/mnt_delfi0002_actuarial/Base Ultimate Calculation Template/MBR Development/MBR Phase 4/MBR Stored Procedures/Proc Output Testing/Method_data_output.csv")
+
+
+# Proc for Mbr vena data
+#vena_data_1 = read.csv("/mnt_delfi0002_actuarial/Base Ultimate Calculation Template/MBR Development/MBR Phase 4/MBR Stored Procedures/MBR_Data Extract.csv",header = TRUE)
+#vena_data = vena_data_extract_raw
+fn_to_transform_vena_all_data = function(vena_data,res_year,analysis_qtr,analysis_val_flag,years_analyzed){
+
+#Old_new_vector_map = read.csv("/mnt_delfi0002_actuarial/Base Ultimate Calculation Template/MBR Development/MBR Phase 7/SLU Working Files/SLU 2024 Q1 Valuation/Old_New_vector_mapping_ceded_new.csv",header = TRUE)
+Old_new_vector_map = read.csv("/mnt_delfi0002_actuarial/Base Ultimate Calculation Template/MBR Development/MBR Phase 8/SLU 2025 Q3 working files/Reserve Class/Old_New_vector_mapping_ceded_new.csv",header = TRUE)
+
+
+
+#branch_list = read.csv("/mnt_delfi0002_actuarial/Base Ultimate Calculation Template/MBR Development/MBR Phase 4/MBR Stored Procedures/Profile_Branch_Vector.csv",header = TRUE)
+Old_new_vector_map$Existing_Vector = as.character(Old_new_vector_map$Existing_Vector)
+Old_new_vector_map$ATP_Vector = as.character(Old_new_vector_map$ATP_Vector)
+Old_new_vector_map$Vena_data_level = as.character(Old_new_vector_map$Vena_data_level)
+Old_new_vector_map$Vector_remove_from_R_testing = as.character(Old_new_vector_map$Vector_remove_from_R_testing)
+Old_new_vector_map = filter(Old_new_vector_map,Vector_remove_from_R_testing=='No')
+Old_new_vector_map = select(Old_new_vector_map,-c('Vector_remove_from_R_testing'))
+
+
+#vena_data = vena_data_extract_raw
+
+#unique(vena_data_extract_raw$'_Vector')
+
+names(vena_data) = c("Reserving_Quarter","Product","Vector",	"Branch",	"Exposure_Year",	"AY / UY",	"Development_Period",	"Measure",	"Version",	"_PLOB",	"Type",	"value")
+#vena_data = select(vena_data,-c("_Event",	"_Placeholder"))
+
+#str(vena_data)
+#vena_data$Exposure_Year = as.numeric(levels(vena_data$Exposure_Year))[vena_data$Exposure_Year]
+#vena_data$value = as.numeric(levels(vena_data$value))[vena_data$value]
+vena_data$value = as.numeric(vena_data$value)
+vena_data$Exposure_Year = as.numeric(vena_data$Exposure_Year)
+
+
+# Preparing data frame at profile exposure year level using branch list
+Only_Branch = select(filter(Old_new_vector_map,Vena_data_level=='Branch'),c('ATP_Vector'))
+Only_Branch = c(Only_Branch$ATP_Vector)
+Only_Profile = select(filter(Old_new_vector_map,Vena_data_level=='Profile'),c('ATP_Vector'))
+Only_Profile = c(Only_Profile$ATP_Vector)
+Only_Sparta = select(filter(Old_new_vector_map,Vena_data_level=='Sparta'),c('ATP_Vector'))
+Only_Sparta = c(Only_Sparta$ATP_Vector)
+
+#### Filtering Branch to Profile  #########
+vena_branch_to_profile = filter(vena_data,Vector %in% Only_Branch)
+vena_branch_to_profile = filter(vena_branch_to_profile,Branch!='No Branch'& `_PLOB`=='No PLOB')
+#vena_branch_to_profile$value =  as.numeric(levels(vena_branch_to_profile$value))[vena_branch_to_profile$value]
+vena_branch_to_profile = vena_branch_to_profile %>% group_by(Product,Vector,Exposure_Year,Measure) %>%
+                          summarise(value = sum(value))
+vena_branch_to_profile = as.data.frame(vena_branch_to_profile)
+
+#### Filtering Sparta to Profile  #########
+vena_Both_to_profile = filter(vena_data,Vector %in% Only_Sparta)
+vena_Both_to_profile = filter(vena_Both_to_profile,Branch!="No Branch"& `_PLOB`!='No PLOB')
+vena_Both_to_profile = vena_Both_to_profile %>% group_by(Product,Vector,Exposure_Year,Measure) %>%
+  summarise(value = sum(value))
+vena_Both_to_profile = select(vena_Both_to_profile,c('Product','Vector','Exposure_Year','Measure','value'))
+vena_Both_to_profile = as.data.frame(vena_Both_to_profile)
+#### Filtering only Profile  #########
+vena_only_profile = select(filter(vena_data,Vector %in% Only_Profile),c('Product','Branch','Vector','Exposure_Year','Development_Period','_PLOB','Measure','value'))
+vena_only_profile = filter(vena_only_profile,!Vector=='Incurred Percentage Developed')
+vena_only_profile = filter(vena_only_profile,Branch=="No Branch"& `_PLOB`=='No PLOB')
+vena_only_profile = vena_only_profile %>% group_by(Product,Vector,Exposure_Year,Measure) %>%
+  summarise(value = sum(value))
+vena_only_profile = as.data.frame(vena_only_profile)
+#vena_only_profile = select(vena_only_profile,-c('Development_Period'))
+#vena_Both_to_profile = select(vena_Both_to_profile,-c('Development_Period'))
+vena_all_profile_df = rbind(vena_branch_to_profile,vena_Both_to_profile)
+vena_all_profile_df = rbind(vena_all_profile_df,vena_only_profile)
+
+# Checking if the reserving quarter in vena extract is same as MBR analysis qtr
+if (substr(unique(vena_data$Reserving_Quarter), start = 2, stop = 2)!=analysis_qtr){
+  print(paste("error : Reserving quarter is not ",analysis_qtr))
+}
+
+# To check only 1 quarter data is available
+if (length(unique(vena_data$Reserving_Quarter))>1){
+  print("error : More than 1 quarter present in data ")
+}
+
+# to check all the required vectors present in data
+required_vector = c(Old_new_vector_map$'ATP_Vector')
+all_vectors = c(unique(vena_all_profile_df$Vector))
+
+common_vector = Reduce(intersect,list(required_vector,all_vectors))
+
+if (length(common_vector)!= length(required_vector)){
+  print("error : Required vectors are missing in data")
+}
+
+
+
+# filtering out df for ldf and preparing ldf dataframe
+vena_data_ldf = incurred_pattern_raw # ldf data is coming at profile level from vena extract which is being filtered here
+vena_data_ldf = filter(vena_data_ldf,Branch=='No Branch'& PLOB=='No PLOB')
+#vena_data_raw = vena_all_profile_df[!(vena_all_profile_df$Vector %in% vena_data_ldf$Vector),]
+#vena_data_raw$Exposure_Year = as.numeric(levels(vena_data_raw$Exposure_Year))[vena_data_raw$Exposure_Year]
+#vena_data_raw$value = as.numeric(levels(vena_data_raw$value))[vena_data_raw$value]
+vena_data_ldf<-vena_data_ldf%>%select(Version,`Reserving Quarter`,`Reserve Class`,Branch,`Exposure Year`,`Development Period`,`RI Type`,Vector,value)
+names(vena_data_ldf)= c("Version","Reserving_Quarter","Product","Branch","Exposure_Year","Development_Period","Measure","Vector","value")
+
+
+
+#vena_data_ldf = filter(vena_data_ldf,Exposure_Year=='No Exposure Year')
+dummy_list = c('DFM_Name','ResQ Project','ResQ Class','No Development Period')
+vena_data_ldf = filter(vena_data_ldf,!(Development_Period %in% dummy_list)  )
+vena_data_ldf$Development_Period = as.numeric(vena_data_ldf$Development_Period)
+#vena_data_ldf$value = as.numeric(levels(vena_data_ldf$value))[vena_data_ldf$value]
+ldf_df = vena_data_ldf
+#vena_data_ldf = ldf_df
+# Creating LDF mapping & Vena_ldf table
+exp_year_dev_month = as.data.frame(seq(analysis_year,analysis_year-years_analyzed+1,by = -1))
+names(exp_year_dev_month) = c("Exposure_Year")
+exp_year_dev_month$Development_Period = seq(analysis_qtr*3,12*years_analyzed,by=12)
+
+vena_data_ldf = left_join(vena_data_ldf,exp_year_dev_month,by='Development_Period')
+vena_data_ldf = dplyr::select(vena_data_ldf,-c('Exposure_Year.x'))
+names(vena_data_ldf)[9] = 'Exposure_Year'
+vena_data_ldf = mutate(vena_data_ldf,Exposure_Year = ifelse((is.na(Exposure_Year)==TRUE),-10,Exposure_Year))
+vena_data_ldf = filter(vena_data_ldf,Exposure_Year!=-10)
+#vena_data_ldf = spread(vena_data_ldf, key=Vector, value=value)
+
+
+# creating MBR_Vena_Data table
+
+# Making exposure year combination of vector,profile and Ri_type
+
+exp_year = data.frame(c(seq(analysis_year,analysis_year-years_analyzed+1,by = -1)))
+names(exp_year) = "Exposure_Year"
+#exp_year = filter(exp_year,Exposure_Year!='NA')
+#exp_year = filter(exp_year,Exposure_Year!="No Exposure Year")
+Product = c(unique(vena_data$Product))
+profile_df = data.frame(Product)
+vector_df = data.frame(c(unique(Old_new_vector_map$ATP_Vector)))
+names(vector_df) = "Vector"
+
+ri_type_df = data.frame(c(unique(vena_all_profile_df$Measure)))
+names(ri_type_df) = 'Measure'
+
+#browser()
+
+Exp_year_comb = merge(profile_df, vector_df, by = NULL)
+Exp_year_comb = merge(Exp_year_comb, exp_year, by = NULL)
+Exp_year_comb = merge(Exp_year_comb, ri_type_df, by = NULL)
+Exp_year_comb$value = 0
+Exp_year_comb = distinct(Exp_year_comb)
+
+
+#str(profile_df)
+#Full_triangle$Exposure_Year = as.numeric(levels(Full_triangle$Exposure_Year))[Full_triangle$Exposure_Year]
+vena_dummy = select(vena_all_profile_df,c("Product","Vector","Exposure_Year","Measure","value"))
+vena_dummy = vena_dummy %>% distinct(Product,Vector,Exposure_Year,Measure,.keep_all = TRUE)
+
+str(Exp_year_comb)
+Exp_year_comb$Product = as.character(Exp_year_comb$Product)
+Exp_year_comb$Vector = as.character(Exp_year_comb$Vector)
+Exp_year_comb$Measure = as.character(Exp_year_comb$Measure)
+Exp_year_comb = left_join(Exp_year_comb,vena_dummy,by = c("Product","Vector","Exposure_Year","Measure"))
+Exp_year_comb = mutate(Exp_year_comb,value.x = ifelse(is.na(value.y)==FALSE,value.y,value.x))
+Exp_year_comb = select(Exp_year_comb,-c(value.y))
+names(Exp_year_comb)[5] = "value"
+
+# Using Old-New vector name mapping to convert vector name into Old
+names(Old_new_vector_map)[2] = "Vector"
+Exp_year_comb = left_join(Exp_year_comb,(select(Old_new_vector_map,c("Vector",'Existing_Vector'))),by="Vector")
+#Exp_year_comb = filter(Exp_year_comb,Vector!='Incurred Percentage Developed')
+Exp_year_comb = left_join(Exp_year_comb,exp_year_dev_month,by="Exposure_Year")
+Exp_year_comb = filter(Exp_year_comb,Existing_Vector!='NA') # Deleting vectors which are not present in our old_new vector mapping
+#write.csv(Exp_year_comb,"/mnt_delfi0002_actuarial/Base Ultimate Calculation Template/MBR Development/MBR Phase 4/MBR Stored Procedures/Proc Output Testing/exp_year_comb.csv")
+#str(exp_year_dev_month)
+
+# applying old-new mapping to vena_data_ldf
+
+vena_data_ldf = left_join(vena_data_ldf,select(Old_new_vector_map,c("Vector",'Existing_Vector')),by="Vector")
+vena_data_ldf = dplyr::select(vena_data_ldf,-c('Vector'))
+names(vena_data_ldf)[9] = "Vector"
+
+Exp_year_comb = select(Exp_year_comb,-c('Vector'))
+names(Exp_year_comb)[5] = 'Vector'
+
+#vena_data_final = distinct(vena_data_final)
+#write.csv(vena_data_final,"/mnt_delfi0002_actuarial/Base Ultimate Calculation Template/MBR Development/MBR Phase 4/MBR Stored Procedures/Proc Output Testing/vena_data_final_test.csv")
+
+# Adding extra column to vena_data_ldf df and Exp_year_comb df
+Exp_year_comb$res_year = analysis_year
+Exp_year_comb$res_qtr =  analysis_qtr
+Exp_year_comb$val_flag = analysis_val_flag
+
+
+Exp_year_comb$'Reserving Quarter' = unique(vena_data$`Reserving_Quarter`)
+Exp_year_comb$Version = "Baseline-H1"
+#Exp_year_comb$Ri_type = c(unique(vena_data$Measure))[[1]]
+
+vena_data_ldf$res_year = analysis_year
+vena_data_ldf$res_qtr = analysis_qtr
+vena_data_ldf$val_flag = analysis_val_flag
+
+
+vena_data_ldf$'Reserving Quarter' = unique(vena_data$`Reserving_Quarter`)
+vena_data_ldf$Version = "Baseline-H1"
+#vena_data_ldf$Measure = c(unique(vena_data$Measure))[[1]]
+
+vena_data_final = select(Exp_year_comb,c('res_year','res_qtr','val_flag',"Vector",'Reserving Quarter','Version','Product','Exposure_Year','Development_Period','Measure','value'))
+vena_data_ldf = select(vena_data_ldf,c('res_year','res_qtr','val_flag',"Vector",'Reserving Quarter','Version','Product','Exposure_Year','Development_Period','Measure','value'))
+
+names(vena_data_final) = c('res_year','res_qtr','val_flag',"Vector",'Reserving Quarter','Version','Product','Exposure Year','Development Period','Ri_type','value')
+names(vena_data_ldf) = c('res_year','res_qtr','val_flag',"Vector",'Reserving Quarter','Version','Product','Exposure Year','Development Period','Ri_type','value')
+
+
+#write.csv(rbind(vena_data_final,vena_data_ldf),"/mnt_delfi0002_actuarial/Base Ultimate Calculation Template/MBR Development/MBR Phase 4/MBR Stored Procedures/Proc Output Testing/Vena_MBR_input_testing/MBR_All_data.csv")
+
+
+# Pivoting vena_data_final & vena_data_ldf
+vena_data_final = filter(vena_data_final,Vector!='Incurred Percentage Developed (Att)')
+vena_data_final = vena_data_final %>% distinct(res_year,res_qtr,val_flag,`Reserving Quarter`,Product,Vector,`Exposure Year`,`Development Period`,Ri_type,Version,.keep_all = TRUE)
+
+
+vena_data_final = spread(vena_data_final, key=Vector, value=value)
+vena_data_final[is.na(vena_data_final)] = 0
+vena_data_ldf = distinct(vena_data_ldf)
+vena_data_ldf = spread(vena_data_ldf, key=Vector, value=value)
+
+
+# Adding LDf into vena_data_final
+vena_data_final = left_join(vena_data_final,select(vena_data_ldf,c('Product','Exposure Year','Ri_type','Incurred Percentage Developed (Att)')),by=c('Product','Exposure Year','Ri_type'))
+vena_data_final = mutate(vena_data_final,'Incurred Percentage Developed (Att)' = ifelse(is.na(vena_data_final$`Incurred Percentage Developed (Att)`)==FALSE,vena_data_final$`Incurred Percentage Developed (Att)`,1))
+#vena_data_final = select(vena_data_final,-c('Incurred Percentage Developed (Att).y','Incurred Percentage Developed (Att).x'))
+
+
+
+# # To check all products have in 25 ldf df & vena_data_final
+# count_check_ldf = vena_data_ldf %>% count(Product)
+# if (min(count_check_ldf$n)!= max(count_check_ldf$n)){
+#   print("error: 25 rows are not present in LDF data")
+# }
+
+count_check_vena = vena_data_final %>% count(Product)
+if (min(count_check_vena$n)!= max(count_check_vena$n)){
+  print("error: 25 rows are not present in Vena  data")
+}
+
+vena_data_ldf = ldf_df
+vena_data_ldf$Exposure_Year = 0
+
+vena_data_ldf$res_year = analysis_year
+vena_data_ldf$res_qtr = analysis_qtr
+vena_data_ldf$val_flag = analysis_val_flag
+
+
+vena_data_ldf$'Reserving Quarter' = unique(vena_data$Reserving_Quarter)
+vena_data_ldf$Version = "Baseline-H1"
+#vena_data_ldf$Ri_type = unique(vena_data$Measure)
+vena_data_ldf = select(vena_data_ldf,c('res_year','res_qtr','val_flag','Reserving Quarter','Version','Product','Exposure_Year','Development_Period','Measure','value'))
+names(vena_data_ldf) = c('res_year','res_qtr','val_flag','Reserving Quarter','Version','Product','Exposure Year','Development Period','Ri_type','Incurred Percentage Developed (Att)')
+vena_data_ldf = filter(vena_data_ldf,vena_data_ldf$`Development Period`!="NA")
+
+#write.csv(vena_data_final,"/mnt_delfi0002_actuarial/Base Ultimate Calculation Template/MBR Development/MBR Phase 4/MBR Stored Procedures/Proc Output Testing/Vena_MBR_input_testing/ceded_output.csv")
+
+
+
+vena_all_data_ldf = list(vena_data_final,vena_data_ldf)
+
+return(vena_all_data_ldf)
+}
+
+#x = vena_all_data_ldf[[1]]
+
+#abc = fn_to_transform_vena_all_data(vena_data=vena_data_extract_raw,res_year=analysis_year,analysis_qtr=analysis_qtr,val_flag = analysis_val_flag,years_analyzed = years_analyzed)
+#abc_1 = as.data.frame(abc[1])
+
+
+#write.csv(abc[1],"/mnt_delfi0002_actuarial/Base Ultimate Calculation Template/MBR Development/MBR Phase 4/MBR Stored Procedures/Proc Output Testing/vena_data_final_output.csv")
+#write.csv(abc[2],"/mnt_delfi0002_actuarial/Base Ultimate Calculation Template/MBR Development/MBR Phase 4/MBR Stored Procedures/Proc Output Testing/vena_data_ldf_output.csv")
+
+#transform_ceded_vector = function(ceded_data,)

@@ -1,0 +1,198 @@
+# Function to check what all ultimate methods have reasonable assumptions to be considered for final selections
+get_valid_methods = function(df,inputs_vena){
+  # if(inputs_vena$Financial_Budget_LR[inputs_vena$exp_year==analysis_year]==0) df$LR = 0
+  # if(inputs_vena$Financial_Budget_LR[inputs_vena$exp_year==analysis_year]==0) df$BF = 0
+  
+  cy_lr =ifelse(inputs_vena$BF_IELR[inputs_vena$exp_year==analysis_year]==0,inputs_vena$Financial_Budget_LR[inputs_vena$exp_year==analysis_year],inputs_vena$BF_IELR[inputs_vena$exp_year==analysis_year])
+  if(cy_lr==0) df$BF = 0
+  
+  if(sum(inputs_vena$CC_Exp_weight)==0 ) df$CC = 0
+  
+  return(df)
+}
+
+
+
+# Function to select ultimates by AY as per the thresholds 
+fn_select_ultimate_by_exp_year = function(ultimates_df,best_iter_result_list,ultimate_methods_to_use,actuals_cum,max_non_zero_inc_year){
+  
+  # Taking copy of ultimates df used later in code
+  ultimates_all_years_df = ultimates_df
+  
+  #Taking recent 12 years for method selection as business mix generally changes and we only consider years with >50% inc % developed for hindsight method
+  #Taking recent 14 years as hard cut off as incurred is not reliable.
+  ultimates_df = filter(ultimates_df,exp_year>max(max_non_zero_inc_year-12,analysis_year-years_capped))
+  ultimates_df = filter(ultimates_df,Cum_Percentages>=0.5)
+  
+  
+  # calculation of average dfl_ulr. we exclude years with inc % developed <50% and years with 0 DFM ULR or 0 incurred as it will distort the average DFM ULR
+  exp_year_include_rmse_df = ultimates_df
+  exp_year_include_rmse_df = mutate(exp_year_include_rmse_df,DFM_ULR = ifelse(Premium==0,0,DFM_Ultimate/Premium))
+  exp_year_include_rmse_df = filter(exp_year_include_rmse_df,Cum_Percentages>=0.5)
+  exp_year_include_rmse_df = filter(exp_year_include_rmse_df,Gross_Incurred!=0)
+  
+  # there should be atleast 1 year satisfying the above conditions for average DFM ULR to be calculated
+  if(nrow(exp_year_include_rmse_df)>0){
+    avg_dfm_ulr = ifelse(sum(exp_year_include_rmse_df$Premium)==0,0,sum(exp_year_include_rmse_df$DFM_Ultimate)/sum(exp_year_include_rmse_df$Premium))
+  } else avg_dfm_ulr = 0
+  
+  
+  ultimates_df = mutate(ultimates_df,DFM_ULR = ifelse(Premium==0,0,DFM_Ultimate/Premium))
+  ultimates_df = mutate(ultimates_df,exp_year_to_include_rmse_calc = ifelse(DFM_ULR<=1.5*avg_dfm_ulr & DFM_ULR >=0.5*avg_dfm_ulr,'Y','N'))
+  
+
+  
+  selections_df = best_iter_result_list
+  #Cum Percentages are in decimal 
+  # Applying direct rule based method selections first. Since we do not include years before 2010 in hinsight calculation, we take DFM ultimate as the method for those years
+  selections_df = mutate(selections_df, selectedMethod = ifelse(Cum_Percentages>=0.85,'DFM_Ultimate',NA))
+  selections_df = mutate(selections_df, selectedMethod = ifelse(exp_year<=max(max_non_zero_inc_year-11,analysis_year-years_capped+1),'DFM_Ultimate',selectedMethod))
+  selections_df = mutate(selections_df, selectedMethod = ifelse(exp_year==analysis_year,'LR_Ultimate',selectedMethod))
+  selections_df = mutate(selections_df, selectedMethod = ifelse(Cum_Percentages<=0.40,'LR_Ultimate',selectedMethod))
+  
+  exp_year_simulate_df = filter(selections_df,is.na(selectedMethod))
+  
+  if(nrow(exp_year_simulate_df)>0 & !all(ultimates_df$exp_year_to_include_rmse_calc=="N") ){
+    
+    exp_year_simulate_data_df = data.frame()
+    
+    # Preparing data frame with all inputs for method calculations
+    for(i in 1:nrow(exp_year_simulate_df)){
+      
+      dev_month = as.integer(exp_year_dev_len[exp_year==exp_year_simulate_df$exp_year[i],][2])
+      
+      data_df = filter(ultimates_df,exp_year<exp_year_simulate_df$exp_year[i])
+      
+      
+      data_df$exp_year_simulated = exp_year_simulate_df$exp_year[i]
+      data_df$Cum_Percentages = exp_year_simulate_df$Cum_Percentages[i]
+      
+      data_df = select(data_df,c(res_year,res_qtr,val_flag,profile_id,exp_year_simulated,exp_year,dev_len,Gross_Incurred,Cum_Percentages,
+                                 Premium,BF_IELR_MBR,PAI,LTI,CC_Detrended_LR_MBR,DFM_Ultimate,exp_year_to_include_rmse_calc))
+      
+      actuals_data_df = filter(actuals_cum,dev_len==dev_month)
+      
+      data_df = left_join(data_df,
+                          select(actuals_data_df,c(exp_year,max_dev_len=dev_len,Cumulative_Gross_Incurred_as_at_max_dev_len = Cumulative_Gross_Incurred)),
+                          by='exp_year')
+      
+      data_df = mutate(data_df,
+                       DFM_Ultimate_as_at_max_dev_len= ifelse(Cum_Percentages!=0,Cumulative_Gross_Incurred_as_at_max_dev_len/Cum_Percentages,0),
+                       BF_Ultimate_as_at_max_dev_len=Cumulative_Gross_Incurred_as_at_max_dev_len+(1-Cum_Percentages)*Premium*BF_IELR_MBR,
+                       CC_Ultimate_as_at_max_dev_len=Cumulative_Gross_Incurred_as_at_max_dev_len+(1-Cum_Percentages)*Premium*CC_Detrended_LR_MBR
+      )
+      
+      exp_year_simulate_data_df = rbind(exp_year_simulate_data_df,data_df)
+      
+    }
+    
+    if(any(exp_year_simulate_data_df$exp_year_to_include_rmse_calc=='Y')){
+      exp_year_simulate_data_df = filter(exp_year_simulate_data_df,exp_year_to_include_rmse_calc=='Y')
+    }
+    
+    exp_year_simulate_rmse_df = exp_year_simulate_data_df %>% group_by(res_year,res_qtr,val_flag,profile_id,exp_year_simulated) %>% 
+      summarise(DFM_RMSE=rmse(DFM_Ultimate,DFM_Ultimate_as_at_max_dev_len),
+                BF_RMSE=rmse(DFM_Ultimate,BF_Ultimate_as_at_max_dev_len),
+                CC_RMSE=rmse(DFM_Ultimate,CC_Ultimate_as_at_max_dev_len)
+      ) %>% as.data.frame()
+    
+    # Adding Inc % Dev to the dataframe
+    exp_year_simulate_rmse_df = inner_join(exp_year_simulate_rmse_df,
+                                           select(exp_year_simulate_df,c(exp_year,Cum_Percentages)),
+                                           by=c('exp_year_simulated'='exp_year'))
+    
+    # Checking for available ultimate methods to use
+    ult_method_colnames = if(all(ultimate_methods_to_use==c(1,1,1,1))==TRUE) c('DFM_RMSE','BF_RMSE','CC_RMSE')
+                     else if(all(ultimate_methods_to_use==c(1,0,1,1))==TRUE) c('DFM_RMSE','CC_RMSE')
+                     else if(all(ultimate_methods_to_use==c(1,1,0,1))==TRUE) c('DFM_RMSE','BF_RMSE')
+                     else c('DFM_RMSE','DFM_RMSE')
+                          
+    all_method_list = c('DFM_RMSE','BF_RMSE','CC_RMSE')
+    method_to_remove = setdiff(all_method_list, ult_method_colnames)
+    
+    exp_year_simulate_rmse_df = select(exp_year_simulate_rmse_df,c("res_year","res_qtr","val_flag","profile_id","exp_year_simulated",
+                                                                   "Cum_Percentages",'DFM_RMSE','BF_RMSE','CC_RMSE'))
+    
+    # Removing not available method
+    if(length(method_to_remove)>=1){
+    
+    exp_year_simulate_rmse_df = select(exp_year_simulate_rmse_df,-c(method_to_remove))
+    }
+    
+    
+
+    
+    # Selecting method on the basis of minimum RMSE
+    col_length = length(colnames(exp_year_simulate_rmse_df))
+    
+    exp_year_simulate_rmse_df = mutate(exp_year_simulate_rmse_df,selectedMethodUltimate=ifelse(Cum_Percentages>=0.50 & col_length>7 ,
+                                                                                                                 apply(data.frame(exp_year_simulate_rmse_df[,(7:col_length)]),1,min),
+                                                                                                   ifelse(Cum_Percentages>=0.50 & col_length==7 ,DFM_RMSE,
+                                                                                                          ifelse(Cum_Percentages<0.5 & col_length>8,apply(data.frame(exp_year_simulate_rmse_df[,(8:col_length)]),1,min),
+                                                                                                                 ifelse(Cum_Percentages<0.5 & col_length==8,exp_year_simulate_rmse_df[,8],DFM_RMSE )))))
+                                                                                                          
+                                                                                                          
+                                                                                                    
+    
+    # Creating ultimate method string on the basis above calculated ultimate
+    exp_year_simulate_rmse_df = exp_year_simulate_rmse_df %>% 
+      mutate(across(ends_with("_RMSE"),
+                    ~ case_when(.x == selectedMethodUltimate ~ cur_column()), .names = "{.col}_selectedMethod")) %>% 
+      unite(selectedMethod, ends_with("_selectedMethod"), na.rm = TRUE, sep = ", ")
+    
+    # If the value of RMSE for All three methods are equal then DFM will be selected
+    exp_year_simulate_rmse_df = exp_year_simulate_rmse_df %>% rowwise() %>% mutate(selectedMethod = ifelse(length(as.list(strsplit(selectedMethod, ',')[[1]]))!=1,as.list(strsplit(selectedMethod, ',')[[1]])[[1]],selectedMethod))
+    
+    
+    
+    
+     # Checking if there is a scenario where DFM Ultimate is selected and another method is selected in prior years to that. In that case, update the prior year method to DFM Ultimate
+    if(any(exp_year_simulate_rmse_df$selectedMethod=="DFM_RMSE")){
+      exp_year_oldest_dfm_index = which.max(as.integer(exp_year_simulate_rmse_df$selectedMethod=="DFM_RMSE"))
+      exp_year_simulate_rmse_df$selectedMethod[1:exp_year_oldest_dfm_index] = "DFM_RMSE"
+    }
+    
+    
+    # Modifying the column values 
+    exp_year_simulate_rmse_df = mutate(exp_year_simulate_rmse_df,
+                                       selectedMethod=replace(selectedMethod,selectedMethod=='DFM_RMSE','DFM_Ultimate'),
+                                       selectedMethod=replace(selectedMethod,selectedMethod=='BF_RMSE','BF_Ultimate'),
+                                       selectedMethod=replace(selectedMethod,selectedMethod=='CC_RMSE','CC_Ultimate')
+    )
+    
+    # Removing extra columns. Currently not included in SQL export table
+    exp_year_simulate_rmse_df$Cum_Percentages = NULL
+    exp_year_simulate_rmse_df$selectedMethodUltimate = NULL
+    
+    selections_df = left_join(selections_df,
+                              select(exp_year_simulate_rmse_df,c(exp_year_simulated,selectedMethod_simulated=selectedMethod)),
+                              by=c('exp_year'='exp_year_simulated')
+    )
+    
+    # updating the main df with selected method names obtained from simulation above
+    selections_df = mutate(selections_df,selectedMethod=ifelse(is.na(selectedMethod),selectedMethod_simulated,selectedMethod))
+    # In case after outlier removal process above, there is no year left for rmse calculation then selected method will be NA. Updating that as DFM_Ultimate.
+    selections_df = mutate(selections_df,selectedMethod=ifelse(is.na(selectedMethod),'DFM_Ultimate',selectedMethod))
+    
+  } else {
+    # if there is no year to simulate then set the data frames to be empty
+    exp_year_simulate_rmse_df=data.frame()
+    exp_year_simulate_data_df=data.frame()
+  }
+  
+  # In case there are no years to be included after removing outliers using Avg DFM ULR (Present in "ultimates_df")
+  if(all(ultimates_df$exp_year_to_include_rmse_calc=="N") ){
+  selections_df = mutate(selections_df,selectedMethod=ifelse(is.na(selectedMethod),'DFM_Ultimate',selectedMethod))
+  }
+  selections_df$SelectedUltimate = 0
+  # Getting the values for Selected Method Ultimate as per the thresholds
+  
+  for(i in 1:nrow(selections_df)){
+    
+    selections_df$SelectedUltimate[i] = ultimates_all_years_df[i,as.character(selections_df$selectedMethod[i])]
+  }
+  
+  results_list = list(selections_df=selections_df,exp_year_simulate_rmse_df=exp_year_simulate_rmse_df,exp_year_simulate_data_df=exp_year_simulate_data_df)
+  
+  return(results_list)
+}

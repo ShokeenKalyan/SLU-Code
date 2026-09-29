@@ -1,0 +1,80 @@
+# function to calculate the weighted RMSE for ultimate sets produced by different threshold sets
+
+calc_upper_tri_rmse = function(SelectedUltimate_df,last_diagonal_df,actuals_cum){
+  
+  # Storing the last diagonal 
+  last_diagonal_df = actuals_cum %>% group_by(exp_year) %>% top_n(n=4, wt=dev_len) %>% as.data.frame()
+  last_diagonal_df = select(last_diagonal_df,c(profile_id,exp_year,dev_len,Cumulative_Gross_Incurred))
+  
+  # Storing the triangle without the last diagonal
+  actuals_cum_wo_last_diagonal = anti_join(actuals_cum,last_diagonal_df,by=c("exp_year","dev_len"))
+  
+  # Creating a data frame to store the upper tri back calculation results later. Initialized with last diagonal values since they are kept the same and using them the triangle is back calculated
+  upper_tri_calc_df<- last_diagonal_df
+  
+  # Calculating cumulative factors as per the selected Ultimate
+  last_diagonal_df = left_join(last_diagonal_df,
+                               select(SelectedUltimate_df,c(exp_year,SelectedUltimate)),
+                               by="exp_year")
+  
+  last_diagonal_df = mutate(last_diagonal_df,
+                            cum_factor = ifelse(Cumulative_Gross_Incurred!=0,SelectedUltimate/Cumulative_Gross_Incurred,1))
+  
+  # Back calculating the upper triangle using the cumulative factors calculated above
+  for(i in (4*years_analyzed-(4-analysis_qtr)-4):1){
+    # print(i)
+    # i=35
+    if(i>4*years_analyzed-(4-analysis_qtr)-4) next
+    
+    # We make a df containing all the rows of the current development. Then we join this with already computed ahead values in df upper_tri_calc_df.
+    # Also we pull in the factor value corresponding to the development which is then used to calculate the upper tri values... 
+    dev_df = filter(select(actuals_cum_wo_last_diagonal,c(profile_id,exp_year,dev_len,Cumulative_Gross_Incurred)),dev_len==i*3)
+    next_dev_df = filter(upper_tri_calc_df,dev_len==i*3+3)
+    
+    dev_df = inner_join(dev_df,select(next_dev_df,c(exp_year,Cum_GIL_next_dev = Cumulative_Gross_Incurred)),by='exp_year')
+    dev_df = inner_join(dev_df,
+                        select(last_diagonal_df,c(dev_len,cum_factor)),
+                        by='dev_len')
+    dev_df$Cum_GIL_dev_calc = ifelse(dev_df$cum_factor!=0,dev_df$Cum_GIL_next_dev/dev_df$cum_factor,0)
+    dev_df = select(dev_df,c(profile_id,exp_year,dev_len,Cumulative_Gross_Incurred=Cum_GIL_dev_calc))
+    # print(nrow(dev_df))
+    upper_tri_calc_df = rbind(upper_tri_calc_df,dev_df)
+    
+  }
+  
+  # Creating one data frame with actual and back calculated incurred
+  rmse_df = select(actuals_cum_wo_last_diagonal,c(profile_id,exp_year,dev_len,Actual_GIL=Cumulative_Gross_Incurred))
+  rmse_df = left_join(rmse_df,
+                      select(upper_tri_calc_df,c(profile_id,exp_year,dev_len,Calculated_GIL=Cumulative_Gross_Incurred)),
+                      by=c('profile_id','exp_year','dev_len'))
+  
+  rmse_df$Difference_GIL = rmse_df$Calculated_GIL - rmse_df$Actual_GIL
+  rmse_df$Squared_Difference_GIL = rmse_df$Difference_GIL^2
+  rmse_df = left_join(rmse_df,exp_year_dev_len,by='exp_year')
+  
+  # RMSE is to be calculated with weights given to each diagonal. Last diagonal has the least weight. This is done because of the approach considered for back calculating the upper triangle
+  rmse_df = mutate(rmse_df,
+                   diagonal_num = (max_dev_len-dev_len)/3+1 
+  )
+  # write.csv(rmse_df,"/mnt_delfi0002_actuarial/Base Ultimate Calculation Template/Testing/R_RMSE_df.csv")
+  
+  diagonal_weights = rmse_df %>% group_by(diagonal_num) %>% count() %>% as.data.frame()
+  diagonal_weights = mutate(diagonal_weights,
+                            weight = 1/n
+  )
+  rmse_df = left_join(rmse_df,
+                      select(diagonal_weights,c(diagonal_num,obs_count=n)),
+                      by='diagonal_num'
+  )
+  diagonal_rmse = rmse_df %>% group_by(diagonal_num) %>% summarise(rmse = sqrt(sum(Squared_Difference_GIL)/unique(obs_count))) %>% as.data.frame()
+  diagonal_rmse = left_join(diagonal_rmse,diagonal_weights,by='diagonal_num')
+  
+  upper_tri_wtd_rmse = sum(diagonal_rmse$rmse*diagonal_rmse$weight)/sum(diagonal_rmse$weight)
+  
+  # upper_tri_rmse = sqrt(sum(rmse_df$Squared_Difference_GIL)/nrow(rmse_df))
+  
+  upper_tri_rmse_list = list(upper_tri_wtd_rmse,rmse_df,upper_tri_calc_df)
+  
+  return(upper_tri_rmse_list)
+  
+}

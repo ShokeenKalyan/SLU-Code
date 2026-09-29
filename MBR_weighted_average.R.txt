@@ -1,0 +1,132 @@
+fn_get_age_to_age_outliers = function(actuals_cum,sml_flag){
+  
+  # this df will be used later for error handling in case there is no year with non-zero incurred
+  actuals_cum_copy = actuals_cum
+  
+  actuals_cum = mutate(actuals_cum,age_to_age = lead(Cumulative_Gross_Incurred)/Cumulative_Gross_Incurred)
+  actuals_cum = mutate(actuals_cum,age_to_age = ifelse(is.na(age_to_age)|is.nan(age_to_age)|is.infinite(age_to_age),1,age_to_age))
+  
+  
+  actuals_cum_by_exp_year = actuals_cum %>% group_by(profile_id,exp_year) %>% summarise(Total_Gross_Incurred=sum(Gross_Incurred))
+  actuals_cum_by_exp_year=filter(actuals_cum_by_exp_year,Total_Gross_Incurred<=0)
+  
+  exp_year_negative_cum_inc = unique(filter(actuals_cum,Cumulative_Gross_Incurred<0)['exp_year'])
+  
+  
+  # removing last diagonal values as age to age factors cannot be calculated for them 
+  actuals_cum = anti_join(actuals_cum,exp_year_dev_len,by=c('exp_year','dev_len'='max_dev_len'))
+  
+  actuals_cum = anti_join(actuals_cum,actuals_cum_by_exp_year,by=c('exp_year'))
+  
+  # removing exp years with negative cumulative development
+  actuals_cum = anti_join(actuals_cum,exp_year_negative_cum_inc,by=c('exp_year'))
+  
+  
+  dev_period_quartiles_df = actuals_cum %>% group_by(dev_len) %>% summarise(IQR_value=IQR(age_to_age),
+                                                                            Q1_value=quantile(age_to_age,probs = 0.25),
+                                                                            Q3_value=quantile(age_to_age,probs = 0.75),
+                                                                            MC = medcouple(age_to_age,do.reflect = TRUE),
+                                                                            Skewness=skewness(age_to_age)
+                                                                            )
+  
+  
+  dev_period_quartiles_df = mutate(dev_period_quartiles_df,MC = ifelse(as.numeric(MC)< -0.5,-0.5,ifelse(as.numeric(MC)> 0.5,0.5,as.numeric(MC)))
+                                   )
+  
+  dev_period_quartiles_df = mutate(dev_period_quartiles_df,
+                                   Min_Range=ifelse(IQR_value!=0, Q1_value - 3*exp(-Skewness*abs(MC))*IQR_value,0.95*Q1_value),
+                                   Max_Range=ifelse(IQR_value!=0, Q3_value + 3*exp( Skewness*MC)*IQR_value,1.05*Q3_value)
+  )
+  
+  
+  # dev_period_quartiles_df = mutate(dev_period_quartiles_df,
+  #                                  Min_Range=ifelse(IQR_value!=0, ifelse(MC>0,Q1_value - 1.5*exp(-4*MC)*IQR_value,Q1_value - 1.5*exp(-3*MC)*IQR_value),0.9*Q1_value),
+  #                                  Max_Range=ifelse(IQR_value!=0, ifelse(MC>0,Q3_value + 1.5*exp( 3*MC)*IQR_value,Q3_value + 1.5*exp( 4*MC)*IQR_value),1.1*Q3_value)
+  #                                  )
+  
+  dev_len_ratios_count = actuals_cum %>% group_by(dev_len) %>% summarise(outlier_data_points_count=n()) %>% as.data.frame()
+  dev_len_ratios_count = filter(dev_len_ratios_count,outlier_data_points_count==outlier_detection_min_points) %>% as.data.frame()
+  if(nrow(dev_len_ratios_count)>=1){
+    outlier_detection_last_dev_month = max(dev_len_ratios_count$dev_len)  
+  } else outlier_detection_last_dev_month = min(actuals_cum_copy$dev_len)
+  
+  
+  # we do outlier detection only till below development period
+  dev_period_quartiles_df = filter(dev_period_quartiles_df,dev_len<=outlier_detection_last_dev_month)
+  
+  actuals_cum = left_join(actuals_cum,
+                          dev_period_quartiles_df,
+                          by='dev_len')
+  actuals_cum = mutate(actuals_cum,
+                       outlier_flag = ifelse(age_to_age<Min_Range | age_to_age>Max_Range,1,0)
+                       )
+  
+  # for developments > 60, we dont check for outliers and hence set it to 1 
+  actuals_cum = mutate(actuals_cum,outlier_flag = ifelse(is.na(outlier_flag),0,outlier_flag))
+  
+  if(sml_flag=='L'){
+    outlier_detection_last_dev_period_index = which(exp_year_dev_len$max_dev_len==outlier_detection_last_dev_month)                         
+  } else{
+    outlier_detection_last_dev_period_index = outlier_detection_last_dev_month/3
+  }
+  
+  
+  
+  return(list(actuals_cum=actuals_cum,outlier_detection_last_dev_period_index=outlier_detection_last_dev_period_index))
+}
+
+
+
+
+# Creating Volume weighted averages  
+## Function to return a matrix of weighted averages
+## Function removes outliers only if remove_outliers_flag="Y"
+calc_weighted_average = function(n,data,age_to_age_outliers,remove_outliers_flag){
+  
+  wa_matrix = matrix( nrow = 1, ncol = 4*years_analyzed-(4-analysis_qtr))
+  
+  for(i in 1:(ncol(data)-1)){
+    
+    
+    # Volume weighted average is calculated wherever the numerator is with non-zero values
+    # Also NA entries are removed, which does the relevant indexing as we go through developments
+    temp_df = data[,i:(i+1)] %>% as.data.frame()
+    names(temp_df) = c('d','n')
+    temp_df = mutate(temp_df,
+                     exp_year=as.integer(rownames(temp_df)),
+                     dev_len= as.integer(colnames(data)[i])
+                     )
+    temp_df = left_join(temp_df,
+                        select(age_to_age_outliers,c(exp_year,dev_len,outlier_flag)),
+                        by=c('exp_year','dev_len')
+                        )
+    
+    # filtering out outliers, NAs, and 0 incurred values
+    if(remove_outliers_flag=='Y'){
+      temp_df = filter(temp_df,outlier_flag==0)
+    }
+    
+    temp_df = filter(temp_df,d!=0)
+    temp_df = filter(temp_df,n!=0)
+    temp_df = filter(temp_df,!is.na(n))
+    
+    k = nrow(temp_df)
+    
+    if(k>=n){
+      wa_matrix[1,i] = sum(temp_df[k:(k-n+1),'n']) / sum(temp_df[k:(k-n+1),'d'])  
+    } else{
+      wa_matrix[1,i] = sum(temp_df[,'n']) / sum(temp_df[,'d'])  
+    }
+    
+    if(wa_matrix[1,i]==0 | is.nan(wa_matrix[1,i]) | is.na(wa_matrix[1,i]) | is.infinite(wa_matrix[1,i])){wa_matrix[1,i] = 1}
+  }
+  
+  
+  # Last development value could not be computed due to no next development
+  wa_matrix[1,length(wa_matrix)] = 1
+  
+  # Updating any NA values with 1. There are extra columns left with NA values in case of YY triangles
+  wa_matrix[is.na(wa_matrix)] = 1
+  
+  return(wa_matrix)
+}

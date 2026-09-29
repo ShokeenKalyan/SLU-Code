@@ -1,0 +1,51 @@
+
+############
+# Function to find the index where we expect the developments in a triangle to end. we calculate the proportion of incremental incurred in the triangle after a development.if the value is less than 1 then we check if there is any further development with >1% of total incurred 
+############
+fn_get_end_triangle_index = function(profile_id_analyzed,sml_flag,actuals_cl,last_dev_period_index){
+  
+  # # Taking actuals data as per profile - YQ for S/M tailed or YY for Long tailed
+  # if(sml_flag=='L'){
+  #   actuals_cl = filter(actuals_yy,profile_id==profile_id_analyzed)
+  # } else {
+  #   actuals_cl = filter(actuals_cl,profile_id==profile_id_analyzed)
+  #   }
+  
+  # actuals_cl = filter(actuals_cl,profile_id==profile_id_analyzed)
+  
+  dev_inc_df = mutate(actuals_cl,Gross_Incurred=abs(Gross_Incurred))
+  dev_inc_df = dev_inc_df %>% group_by(dev_len) %>% summarise(Gross_Incurred = sum(Gross_Incurred))
+  dev_inc_df$fake_col = 1
+  
+  total_inc = sum(dev_inc_df$Gross_Incurred)
+  
+  temp_df = full_join(dev_inc_df,dev_inc_df,by='fake_col')
+  temp_df = filter(temp_df,dev_len.x<dev_len.y)
+  temp_df = temp_df %>% group_by(dev_len = dev_len.x) %>% summarise(Gross_Incurred_ahead = sum(Gross_Incurred.y))
+  # temp_df = mutate(temp_df,Prop_Total_Inc = ifelse(total_inc!=0,Gross_Incurred_ahead/total_inc,0))
+  if(total_inc!=0) temp_df = mutate(temp_df,Prop_Total_Inc = Gross_Incurred_ahead/total_inc)
+  else temp_df = mutate(temp_df,Prop_Total_Inc = 0)
+  
+  
+  temp_df = mutate(temp_df,dev_less_than_1 = ifelse(Prop_Total_Inc*100<=factor_1_index_threshold,1,0),
+                   dev_greater_than_1 = ifelse(abs(Prop_Total_Inc)*100>1,1,0))
+  
+  # creating a copy of df to return for calculation check
+  dev_prop_inc_df = as.data.frame(temp_df)
+  dev_prop_inc_df = mutate(dev_prop_inc_df,res_year=analysis_year,res_qtr=analysis_qtr,val_flag=analysis_val_flag,profile_id=profile_id_analyzed)
+  dev_prop_inc_df = select(dev_prop_inc_df,c(res_year,res_qtr,val_flag,profile_id,dev_len,Gross_Incurred_ahead,Prop_Total_Inc,dev_less_than_1,dev_greater_than_1))
+  
+  # we want index of development, where proportion of incurred is less than 0.5% of total incurred and there is no further development with >1% absolute prop of incurred
+  if(sum(temp_df$dev_less_than_1)>=1){
+    end_triangle_dev=which.max(temp_df$dev_less_than_1)
+    
+    end_index=ifelse(length(end_triangle_dev)>0,end_triangle_dev,last_dev_period_index)
+  } else{
+    end_index=last_dev_period_index
+  }
+  
+  
+  if(end_index<consecutive_less_than_one_num) end_index= consecutive_less_than_one_num
+  
+  return(list(dev_prop_inc_df=dev_prop_inc_df,end_index=end_index))
+}

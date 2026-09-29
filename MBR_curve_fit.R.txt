@@ -1,0 +1,575 @@
+#####
+# Curve Fit
+# This script contains function definitions for curve fits
+#####
+
+
+# Creating a df to be used later in distribution functions
+df<-as.data.frame(x=numeric(),y=numeric(),rsq=numeric(),rmse=numeric(),dcook=numeric())
+
+
+########   Log regression   ###########
+###############  Exponential  ##########
+# This function requires y1 data frame of 1 column of LDFs as input
+exponentialfunc<-function(y1,sml_flag)
+{
+  if(sml_flag=='L'){
+    x<-seq(12,years_analyzed*12,by = 12)
+    # Retaining the type data frame for y1 and its rownames for consistency with YQ data frame
+    y2=data.frame(y=y1[1:years_analyzed,])
+    rownames(y2)=rownames(y1)[1:years_analyzed]
+    y1=y2
+    
+  } else{
+    x<-seq(3,3*4*years_analyzed-(4-analysis_qtr)*3,by = 3)
+  }
+  
+  
+  
+  
+  m<-cbind(x,y1)
+  m_1<- subset(m,y1>1)
+  imax<-nrow(m_1)
+  
+  # Checking that there should be atleast 1 point to fit curve
+  if(imax!=0){
+    
+    exp_sumx_noexcl<-sum(m_1$x)
+    exp_sumy_noexcl<-sum(log(m_1$y-1))
+    exp_xx_noexcl<-sum((m_1$x)^2 )
+    exp_xy_noexcl<-sum(m_1$x * log(m_1$y-1))
+    exp_sxx_noexcl<-exp_xx_noexcl-(exp_sumx_noexcl^2)/nrow(m_1)
+    exp_sxy_noexcl<-exp_xy_noexcl-exp_sumx_noexcl * exp_sumy_noexcl/nrow(m_1)
+    exp_b_noexcl<-ifelse(exp_sxx_noexcl==0,1,exp_sxy_noexcl/exp_sxx_noexcl)
+    exp_a_noexcl<-exp_sumy_noexcl/nrow(m_1)-exp_b_noexcl*exp_sumx_noexcl/nrow(m_1)
+    exp_ss_res_noexcl<-sum((log(m_1$y-1)-(exp_a_noexcl+exp_b_noexcl*m_1$x))^2)
+    exp_ss_total_noexcl<-sum((log(m_1$y-1)-exp_sumy_noexcl/nrow(m_1))^2)
+    exp_rsq_noexcl<-1-ifelse(exp_ss_total_noexcl==0,1,exp_ss_res_noexcl/exp_ss_total_noexcl)
+    
+    m_1$ycap_noexcl<-1+exp(exp_a_noexcl)*exp(exp_b_noexcl*m_1$x)
+    
+    for (i in 1:imax)
+    {
+      df_1<-m_1[-i,]
+      
+      ############  rsq and y cap calculations  #######
+      
+      exp_sumx<-sum(df_1$x)
+      exp_sumy<-sum(log(df_1$y-1))
+      exp_xx<-sum(df_1$x ^2 )
+      exp_xy<-sum(df_1$x * log(df_1$y-1))
+      exp_sxx<-exp_xx-(exp_sumx^2)/nrow(df_1)
+      exp_sxy<-exp_xy-exp_sumx * exp_sumy/nrow(df_1)
+      exp_b<-ifelse(exp_sxx==0,1,exp_sxy/exp_sxx)
+      exp_a<-exp_sumy/nrow(df_1)-exp_b*exp_sumx/nrow(df_1)
+      exp_ss_res<-sum((log(df_1$y-1)-(exp_a+exp_b*df_1$x))^2)
+      exp_ss_total<-sum((log(df_1$y-1)-exp_sumy/nrow(df_1))^2)
+      exp_rsq<-1-ifelse(exp_ss_total==0,1,exp_ss_res/exp_ss_total)
+      
+      y_2_cap<-1+exp(exp_a)*exp(exp_b*m_1$x)
+      
+      ############   rmse   ###########
+      exp_rmse<-rmse(df_1$y,y_2_cap)
+      
+      #########  cook's distance ######
+      exp_cookdist<-(sum((m_1$ycap_noexcl-y_2_cap)^2))/(2*exp_rmse*exp_rmse)
+      
+      t = data.frame(m_1$x[i],m_1$y[i],exp_rsq,exp_rmse,exp_cookdist)
+      df<-rbind(df,t)
+    }
+    colnames(df) = c('x','y','exp_rsq','exp_rmse','exp_dcook')
+    
+    # Removing the influential points 
+    min_exp_rmse = min(df$exp_rmse)
+    max_exp_rsq = max(df$exp_rsq)
+    
+    df = mutate(df,
+                to_remove = ifelse( exp_rmse == min_exp_rmse | exp_rsq == max_exp_rsq | exp_dcook>1 ,'Y','N')
+    )
+    #Storing a copy to return for diagnostics
+    influential_points_df= df
+    df = filter(df,to_remove == 'N')
+    
+    # m_1 will contain data points used finally for fitting the distribution, excluding the influential points
+    m_1 = df
+    exp_sumx_noexcl<-sum(m_1$x)
+    exp_sumy_noexcl<-sum(log(m_1$y-1))
+    exp_xx_noexcl<-sum((m_1$x)^2 )
+    exp_xy_noexcl<-sum(m_1$x * log(m_1$y-1))
+    exp_sxx_noexcl<-exp_xx_noexcl-(exp_sumx_noexcl^2)/nrow(m_1)
+    exp_sxy_noexcl<-exp_xy_noexcl-exp_sumx_noexcl * exp_sumy_noexcl/nrow(m_1)
+    exp_b_noexcl<-ifelse(exp_sxx_noexcl==0,1,exp_sxy_noexcl/exp_sxx_noexcl)
+    exp_a_noexcl<-exp_sumy_noexcl/nrow(m_1)-exp_b_noexcl*exp_sumx_noexcl/nrow(m_1)
+    exp_ss_res_noexcl<-sum((log(m_1$y-1)-(exp_a_noexcl+exp_b_noexcl*m_1$x))^2)
+    exp_ss_total_noexcl<-sum((log(m_1$y-1)-exp_sumy_noexcl/nrow(m_1))^2)
+    exp_rsq_noexcl<-1-ifelse(exp_ss_total_noexcl==0,1,exp_ss_res_noexcl/exp_ss_total_noexcl)
+    
+    m_1$ycap_noexcl<-1+exp(exp_a_noexcl)*exp(exp_b_noexcl*m_1$x)
+    
+    # m contains the final calculated values of ldfs for all developments 3 through 240 
+    m$ycap_noexcl<-1+exp(exp_a_noexcl)*exp(exp_b_noexcl*m$x)
+    
+    # if there were <=2 data points for curve fit, then we do not fit a curve and take 1 as default curve fit values
+    if(nrow(df)<=2){
+      m$ycap_noexcl = 1
+    }
+  }
+  else{
+    m$ycap_noexcl = 1
+    exp_rsq_noexcl=0
+    influential_points_df=m
+    influential_points_df = mutate(influential_points_df,
+                                   ycap_noexcl=NULL,    # removing extra column 
+                                   exp_rsq=0,
+                                   exp_rmse=1,
+                                   exp_dcook=1,
+                                   to_remove=NA
+                                   )
+  }
+  
+  # Changing the development month labels to match with dev months everywhere else in code and in QV 
+  if(sml_flag=='L'){
+    m$x = seq(3*analysis_qtr,years_analyzed*12,by = 12)
+    influential_points_df$x = influential_points_df$x - 9/analysis_qtr
+  }
+  list_exp = list(exp_df = m,exp_rsq = exp_rsq_noexcl,influential_points_df = influential_points_df)
+  
+  return(list_exp)
+}
+
+
+###############  Weibull  ##########
+
+weibullfunc<-function(y1,sml_flag)
+{   
+  
+  if(sml_flag=='L'){
+    x<-seq(12,years_analyzed*12,by = 12)
+    # Retaining the type data frame for y1 and its rownames for consistency with YQ data frame
+    y2=data.frame(y=y1[1:years_analyzed,])
+    rownames(y2)=rownames(y1)[1:years_analyzed]
+    y1=y2
+    
+  } else{
+    x<-seq(3,3*4*years_analyzed-(4-analysis_qtr)*3,by = 3)
+  }
+  m<-cbind(x,y1)
+  m_1<- subset(m,y1>1)
+  imax<-nrow(m_1)
+  
+  # Checking that there should be atleast 1 point to fit curve
+  if(imax!=0){
+    
+    wbl_sumx_noexcl<-sum(log(m_1$x))
+    wbl_sumy_noexcl<-sum(log(log(m_1$y/(m_1$y-1))))
+    wbl_xx_noexcl<-sum(log(m_1$x) ^2 )
+    wbl_xy_noexcl<-sum(log(m_1$x) * log(log(m_1$y/(m_1$y-1))))
+    wbl_sxx_noexcl<-wbl_xx_noexcl-(wbl_sumx_noexcl^2)/nrow(m_1)
+    wbl_sxy_noexcl<-wbl_xy_noexcl-wbl_sumx_noexcl * wbl_sumy_noexcl/nrow(m_1)
+    wbl_b_noexcl<-ifelse(wbl_sxx_noexcl==0,1,wbl_sxy_noexcl/wbl_sxx_noexcl)
+    wbl_a_noexcl<-wbl_sumy_noexcl/nrow(m_1)-wbl_b_noexcl*wbl_sumx_noexcl/nrow(m_1)
+    wbl_ss_res_noexcl<-sum((log(log(m_1$y/(m_1$y-1)))-(wbl_a_noexcl+wbl_b_noexcl*log(m_1$x)))^2)
+    wbl_ss_total_noexcl<-sum((log(log(m_1$y/(m_1$y-1)))-wbl_sumy_noexcl/nrow(m_1))^2)
+    wbl_rsq_noexcl<-1-ifelse(wbl_ss_total_noexcl==0,1,wbl_ss_res_noexcl/wbl_ss_total_noexcl)
+    
+    m_1$ycap_noexcl<-(1/(1-exp(-exp(wbl_a_noexcl+wbl_b_noexcl*log(m_1$x)))))
+    
+    for (i in 1:imax)
+    {  
+      df_1<-m_1[-i,]
+      
+      ############  rsq and y cap calculations  #######
+      wbl_sumx<-sum(log(df_1$x))
+      wbl_sumy<-sum(log(log(df_1$y/(df_1$y-1))))
+      wbl_xx<-sum(log(df_1$x) ^2 )
+      wbl_xy<-sum(log(df_1$x) * log(log(df_1$y/(df_1$y-1))))
+      wbl_sxx<-wbl_xx-(wbl_sumx^2)/nrow(df_1)
+      wbl_sxy<-wbl_xy-wbl_sumx * wbl_sumy/nrow(df_1)
+      wbl_b<-ifelse(wbl_sxx==0,1,wbl_sxy/wbl_sxx)
+      wbl_a<-wbl_sumy/nrow(df_1)-wbl_b*wbl_sumx/nrow(df_1)
+      wbl_ss_res<-sum((log(log(df_1$y/(df_1$y-1)))-(wbl_a+wbl_b*log(df_1$x)))^2)
+      wbl_ss_total<-sum((log(log(df_1$y/(df_1$y-1)))-wbl_sumy/nrow(df_1))^2)
+      wbl_rsq<-1-ifelse(wbl_ss_total==0,1,wbl_ss_res/wbl_ss_total)
+      
+      y_2_cap<-(1/(1-exp(-exp(wbl_a+wbl_b*log(m_1$x)))))
+      
+      ############   rmse   ###########
+      wbl_rmse<-rmse(df_1$y,y_2_cap)
+      
+      #########  cook's distance ######
+      wbl_cookdist<-(sum((m_1$ycap_noexcl-y_2_cap)^2))/(2*wbl_rmse*wbl_rmse)
+      
+      ########  leverage  ######
+      
+      t = data.frame(m_1$x[i],m_1$y[i],wbl_rsq,wbl_rmse,wbl_cookdist)
+      df<-rbind(df,t)
+      
+    }
+    colnames(df) = c('x','y','wbl_rsq','wbl_rmse','wbl_dcook')
+    
+    # Removing the influential points 
+    min_wbl_rmse = min(df$wbl_rmse)
+    max_wbl_rsq = max(df$wbl_rsq)
+    
+    df = mutate(df,
+                to_remove = ifelse( wbl_rmse == min_wbl_rmse | wbl_rsq == max_wbl_rsq | wbl_dcook>1 ,'Y','N')
+    )
+    #Storing a copy to return for diagnostics
+    influential_points_df= df
+    
+    df = filter(df,to_remove == 'N')
+    
+    # m_1 will contain data points used finally for fitting the distribution, excluding the influential points
+    m_1 = df
+    wbl_sumx_noexcl<-sum(log(m_1$x))
+    wbl_sumy_noexcl<-sum(log(log(m_1$y/(m_1$y-1))))
+    wbl_xx_noexcl<-sum(log(m_1$x) ^2 )
+    wbl_xy_noexcl<-sum(log(m_1$x) * log(log(m_1$y/(m_1$y-1))))
+    wbl_sxx_noexcl<-wbl_xx_noexcl-(wbl_sumx_noexcl^2)/nrow(m_1)
+    wbl_sxy_noexcl<-wbl_xy_noexcl-wbl_sumx_noexcl * wbl_sumy_noexcl/nrow(m_1)
+    wbl_b_noexcl<-ifelse(wbl_sxx_noexcl==0,1,wbl_sxy_noexcl/wbl_sxx_noexcl)
+    wbl_a_noexcl<-wbl_sumy_noexcl/nrow(m_1)-wbl_b_noexcl*wbl_sumx_noexcl/nrow(m_1)
+    wbl_ss_res_noexcl<-sum((log(log(m_1$y/(m_1$y-1)))-(wbl_a_noexcl+wbl_b_noexcl*log(m_1$x)))^2)
+    wbl_ss_total_noexcl<-sum((log(log(m_1$y/(m_1$y-1)))-wbl_sumy_noexcl/nrow(m_1))^2)
+    wbl_rsq_noexcl<-1-ifelse(wbl_ss_total_noexcl==0,1,wbl_ss_res_noexcl/wbl_ss_total_noexcl)
+    
+    m_1$ycap_noexcl<-(1/(1-exp(-exp(wbl_a_noexcl+wbl_b_noexcl*log(m_1$x)))))
+    
+    # m contains the final calculated values of ldfs for all developments 3 through 294 
+    m$ycap_noexcl<-(1/(1-exp(-exp(wbl_a_noexcl+wbl_b_noexcl*log(m$x)))))
+    
+    # if there were <=2 data points for curve fit, then we do not fit a curve and take 1 as default curve fit values
+    if(nrow(df)<=2){
+      m$ycap_noexcl = 1
+    }
+  }
+  else{
+    m$ycap_noexcl = 1
+    wbl_rsq_noexcl=0
+    influential_points_df=m
+    influential_points_df = mutate(influential_points_df,
+                                   ycap_noexcl=NULL,
+                                   wbl_rsq=0,
+                                   wbl_rmse=1,
+                                   wbl_dcook=1,
+                                   to_remove=NA
+    )
+  }
+  
+  # Changing the development month labels to match with dev months everywhere else in code and in QV 
+  if(sml_flag=='L'){
+    m$x = seq(3*analysis_qtr,years_analyzed*12,by = 12)
+    influential_points_df$x = influential_points_df$x - 9/analysis_qtr
+  }
+  list_wbl = list(wbl_df = m,wbl_rsq = wbl_rsq_noexcl,influential_points_df = influential_points_df)
+  
+  return(list_wbl)
+}
+
+
+###############  Power  ##########
+
+powerfunc<-function(y1,sml_flag)
+{   
+  if(sml_flag=='L'){
+    x<-seq(12,years_analyzed*12,by = 12)
+    # Retaining the type data frame for y1 and its rownames for consistency with YQ data frame
+    y2=data.frame(y=y1[1:years_analyzed,])
+    rownames(y2)=rownames(y1)[1:years_analyzed]
+    y1=y2
+    
+  } else{
+    x<-seq(3,3*4*years_analyzed-(4-analysis_qtr)*3,by = 3)
+  }
+  m<-cbind(x,y1)
+  m_1<- subset(m,y1>1)
+  imax<-nrow(m_1)
+  
+  # Checking that there should be atleast 1 point to fit curve
+  if(imax!=0){
+    
+    pow_sumx_noexcl<-sum(m_1$x)
+    pow_sumy_noexcl<-sum(log(log(m_1$y)))
+    pow_xx_noexcl<-sum(m_1$x ^2 )
+    pow_xy_noexcl<-sum(m_1$x * log(log(m_1$y)))
+    pow_sxx_noexcl<-pow_xx_noexcl-(pow_sumx_noexcl^2)/nrow(m_1)
+    pow_sxy_noexcl<-pow_xy_noexcl-pow_sumx_noexcl * pow_sumy_noexcl/nrow(m_1)
+    pow_b_noexcl<-ifelse(pow_sxx_noexcl==0,1,pow_sxy_noexcl/pow_sxx_noexcl)
+    pow_a_noexcl<-pow_sumy_noexcl/nrow(m_1)-pow_b_noexcl*pow_sumx_noexcl/nrow(m_1)
+    pow_ss_res_noexcl<-sum((log(log(m_1$y))-(pow_a_noexcl+pow_b_noexcl*m_1$x))^2)
+    pow_ss_total_noexcl<-sum((log(log(m_1$y))-pow_sumy_noexcl/nrow(m_1))^2)
+    pow_rsq_noexcl<-1-ifelse(pow_ss_total_noexcl==0,1,pow_ss_res_noexcl/pow_ss_total_noexcl)
+    
+    m_1$ycap_noexcl<-exp(exp(pow_a_noexcl+pow_b_noexcl*m_1$x))
+    
+    for (i in 1:imax)
+    {  
+      df_1<-m_1[-i,]
+      
+      ############  rsq and y cap calculations  #######
+      
+      pow_sumx<-sum(df_1$x)
+      pow_sumy<-sum(log(log(df_1$y)))
+      pow_xx<-sum(df_1$x ^2 )
+      pow_xy<-sum(df_1$x * log(log(df_1$y)))
+      pow_sxx<-pow_xx-(pow_sumx^2)/nrow(df_1)
+      pow_sxy<-pow_xy-pow_sumx * pow_sumy/nrow(df_1)
+      pow_b<-ifelse(pow_sxx==0,1,pow_sxy/pow_sxx)
+      pow_a<-pow_sumy/nrow(df_1)-pow_b*pow_sumx/nrow(df_1)
+      pow_ss_res<-sum((log(log(df_1$y))-(pow_a+pow_b*df_1$x))^2)
+      pow_ss_total<-sum((log(log(df_1$y))-pow_sumy/nrow(df_1))^2)
+      pow_rsq<-1-ifelse(pow_ss_total==0,1,pow_ss_res/pow_ss_total)
+      
+      y_2_cap<-exp(exp(pow_a+pow_b*m_1$x))
+      
+      ############   rmse   ###########
+      
+      pow_rmse<-rmse(df_1$y,y_2_cap)
+      
+      #########  cook's distance ######
+      pow_cookdist<-(sum((m_1$ycap_noexcl-y_2_cap)^2))/(2*pow_rmse*pow_rmse)
+      
+      t = data.frame(m_1$x[i],m_1$y[i],pow_rsq,pow_rmse,pow_cookdist)
+      df<-rbind(df,t)
+      
+    }
+    colnames(df) = c('x','y','pow_rsq','pow_rmse','pow_dcook')
+    
+    # Removing the influential points 
+    min_pow_rmse = min(df$pow_rmse)
+    max_pow_rsq = max(df$pow_rsq)
+    
+    df = mutate(df,
+                to_remove = ifelse( pow_rmse == min_pow_rmse | pow_rsq == max_pow_rsq | pow_dcook>1 ,'Y','N')
+    )
+    #Storing a copy to return for diagnostics
+    influential_points_df= df
+    
+    df = filter(df,to_remove == 'N')
+    
+    # m_1 will contain data points used finally for fitting the distribution, excluding the influential points
+    m_1 = df
+    pow_sumx_noexcl<-sum(m_1$x)
+    pow_sumy_noexcl<-sum(log(log(m_1$y)))
+    pow_xx_noexcl<-sum(m_1$x ^2 )
+    pow_xy_noexcl<-sum(m_1$x * log(log(m_1$y)))
+    pow_sxx_noexcl<-pow_xx_noexcl-(pow_sumx_noexcl^2)/nrow(m_1)
+    pow_sxy_noexcl<-pow_xy_noexcl-pow_sumx_noexcl * pow_sumy_noexcl/nrow(m_1)
+    pow_b_noexcl<-ifelse(pow_sxx_noexcl==0,1,pow_sxy_noexcl/pow_sxx_noexcl)
+    pow_a_noexcl<-pow_sumy_noexcl/nrow(m_1)-pow_b_noexcl*pow_sumx_noexcl/nrow(m_1)
+    pow_ss_res_noexcl<-sum((log(log(m_1$y))-(pow_a_noexcl+pow_b_noexcl*m_1$x))^2)
+    pow_ss_total_noexcl<-sum((log(log(m_1$y))-pow_sumy_noexcl/nrow(m_1))^2)
+    pow_rsq_noexcl<-1-ifelse(pow_ss_total_noexcl==0,1,pow_ss_res_noexcl/pow_ss_total_noexcl)
+    
+    m_1$ycap_noexcl<-exp(exp(pow_a_noexcl+pow_b_noexcl*m_1$x))
+    
+    # m contains the final calculated values of ldfs for all developments 3 through 294 
+    m$ycap_noexcl<-exp(exp(pow_a_noexcl+pow_b_noexcl*m$x))
+    
+    # if there were <=2 data points for curve fit, then we do not fit a curve and take 1 as default curve fit values
+    # if curve fits generate very large values tending to infinite,then we set the values to 1
+    if(nrow(df)<=2 | any(m$ycap_noexcl>999999)){
+      m$ycap_noexcl = 1
+    }
+    
+  }
+  else{
+    m$ycap_noexcl = 1
+    pow_rsq_noexcl=0
+    influential_points_df=m
+    influential_points_df = mutate(influential_points_df,
+                                   ycap_noexcl=NULL,
+                                   pow_rsq=0,
+                                   pow_rmse=1,
+                                   pow_dcook=1,
+                                   to_remove=NA
+    )
+  }
+    
+  # Changing the development month labels to match with dev months everywhere else in code and in QV 
+  if(sml_flag=='L'){
+    m$x = seq(3*analysis_qtr,years_analyzed*12,by = 12)
+    influential_points_df$x = influential_points_df$x - 9/analysis_qtr
+  }  
+  list_pow = list(pow_df = m,pow_rsq = pow_rsq_noexcl,influential_points_df = influential_points_df)
+  
+  return(list_pow)
+  
+}
+
+
+###############  Inverse Power  ##########
+
+# c_possible_values<-c(-0.5,0,0.5,1,1.5,2,2.5,3,3.5,4,4.5,5,5.5,6,6.5,7,7.5,8,8.5,9,9.5,10,10.5,11,11.5,12,12.5,13,13.5,14,14.5,15)
+
+c_possible_values<-c(-0.5,0,1,3,5)
+
+IPCfunc<-function(y1,sml_flag)
+{   
+  if(sml_flag=='L'){
+    
+    c_possible_values = c_possible_values *12
+    
+    x<-seq(12,years_analyzed*12,by = 12)
+    # Retaining the type data frame for y1 and its rownames for consistency with YQ data frame
+    y2=data.frame(y=y1[1:years_analyzed,])
+    rownames(y2)=rownames(y1)[1:years_analyzed]
+    y1=y2
+    
+  } else{
+    
+    c_possible_values = c_possible_values*3
+    
+    x<-seq(3,3*4*years_analyzed-(4-analysis_qtr)*3,by = 3)
+  }
+  m<-cbind(x,y1)
+  m_1<- subset(m,y1>1)
+  imax<-nrow(m_1)
+  
+  # Checking that there should be atleast 1 point to fit curve
+  if(imax!=0){
+    
+    # df<-data.frame(c=numeric(),x=numeric(),y=numeric(),rsq=numeric(),rmse=numeric(),dcook=numeric())
+    df_c_select<-data.frame(c=numeric(),IPC_rsquare=numeric())
+    
+    for(val in c_possible_values)
+    {   
+      
+      IPC_sumx_noexcl<-sum(log(val+m_1$x))
+      IPC_sumy_noexcl<-sum(log(m_1$y-1))
+      IPC_xx_noexcl<-sum((log(val+m_1$x)) ^2 )
+      IPC_xy_noexcl<-sum((log(val+m_1$x)) * log(m_1$y-1))
+      IPC_sxx_noexcl<-IPC_xx_noexcl-(IPC_sumx_noexcl^2)/nrow(m_1)
+      IPC_sxy_noexcl<-IPC_xy_noexcl-IPC_sumx_noexcl * IPC_sumy_noexcl/nrow(m_1)
+      IPC_b_noexcl<-ifelse(IPC_sxx_noexcl==0,1,IPC_sxy_noexcl/IPC_sxx_noexcl)
+      IPC_a_noexcl<-IPC_sumy_noexcl/nrow(m_1)-IPC_b_noexcl*IPC_sumx_noexcl/nrow(m_1)
+      IPC_ss_res_noexcl<-sum((log(m_1$y-1)-(IPC_a_noexcl+IPC_b_noexcl*log(val+m_1$x)))^2)
+      IPC_ss_total_noexcl<-sum((log(m_1$y-1)-IPC_sumy_noexcl/nrow(m_1))^2)
+      IPC_rsq_noexcl<-1-ifelse(IPC_ss_total_noexcl==0,1,IPC_ss_res_noexcl/IPC_ss_total_noexcl)
+      #df_c_select$c<-val
+      #df_c_select$IPC_rsquare<-IPC_rsq_noexcl
+      
+      df_c_select<-rbind(df_c_select,c(val,IPC_rsq_noexcl))
+      
+      #dummydataframe<-data.frame(val,IPC_rsq)
+    }   
+    colnames(df_c_select)<-c("valueofc","rsqcorrtovalueofc")
+    row_with_max_rsq<-df_c_select[which.max(df_c_select$rsqcorrtovalueofc),]
+    c_final<-row_with_max_rsq$valueofc
+    
+    
+    #IPC_dataframe<-rbind(IPC_dataframe,dummydataframe)
+    
+    #m_1$ycap_noexcl<-exp(exp(pow_a_noexcl+pow_b_noexcl*m_1$x))
+    val<-c_final
+    
+    IPC_sumx_noexcl<-sum(log(val+m_1$x))
+    IPC_sumy_noexcl<-sum(log(m_1$y-1))
+    IPC_xx_noexcl<-sum((log(val+m_1$x)) ^2 )
+    IPC_xy_noexcl<-sum((log(val+m_1$x)) * log(m_1$y-1))
+    IPC_sxx_noexcl<-IPC_xx_noexcl-(IPC_sumx_noexcl^2)/nrow(m_1)
+    IPC_sxy_noexcl<-IPC_xy_noexcl-IPC_sumx_noexcl * IPC_sumy_noexcl/nrow(m_1)
+    IPC_b_noexcl<-ifelse(IPC_sxx_noexcl==0,1,IPC_sxy_noexcl/IPC_sxx_noexcl)
+    IPC_a_noexcl<-IPC_sumy_noexcl/nrow(m_1)-IPC_b_noexcl*IPC_sumx_noexcl/nrow(m_1)
+    IPC_ss_res_noexcl<-sum((log(m_1$y-1)-(IPC_a_noexcl+IPC_b_noexcl*log(val+m_1$x)))^2)
+    IPC_ss_total_noexcl<-sum((log(m_1$y-1)-IPC_sumy_noexcl/nrow(m_1))^2)
+    IPC_rsq_noexcl<-1-ifelse(IPC_ss_total_noexcl==0,1,IPC_ss_res_noexcl/IPC_ss_total_noexcl)
+    
+    m_1$ycap_noexcl<-1+exp(IPC_a_noexcl+IPC_b_noexcl*log(m_1$x+val))
+    
+    for (i in 1:imax)
+    {  
+      ##i=1
+      #y_2<-m_1$y [-i]
+      df_1<-m_1[-i,]
+      
+      ############  rsq and y cap calculations  #######
+      
+      IPC_sumx<-sum(log(val+df_1$x))
+      IPC_sumy<-sum(log(df_1$y-1))
+      IPC_xx<-sum((log(val+df_1$x)) ^2 )
+      IPC_xy<-sum((log(val+df_1$x)) * log(df_1$y-1))
+      IPC_sxx<-IPC_xx-(IPC_sumx^2)/nrow(df_1)
+      IPC_sxy<-IPC_xy-IPC_sumx * IPC_sumy/nrow(df_1)
+      IPC_b<-ifelse(IPC_sxx_noexcl==0,1,IPC_sxy/IPC_sxx_noexcl)
+      IPC_a<-IPC_sumy/nrow(df_1)-IPC_b*IPC_sumx/nrow(df_1)
+      IPC_ss_res<-sum((log(df_1$y-1)-(IPC_a+IPC_b*log(val+df_1$x)))^2)
+      IPC_ss_total<-sum((log(df_1$y-1)-IPC_sumy/nrow(df_1))^2)
+      IPC_rsq<-1-ifelse(IPC_ss_total==0,1,IPC_ss_res/IPC_ss_total)
+      
+      y_2_cap<-1+exp(IPC_a+IPC_b*log(m_1$x+val))
+      
+      ############   rmse   ###########
+      
+      IPC_rmse<-rmse(df_1$y,y_2_cap)
+      
+      #########  cook's distance ######
+      IPC_cookdist<-(sum((m_1$ycap_noexcl-y_2_cap)^2))/(2*IPC_rmse*IPC_rmse)
+      
+      t = data.frame(val,m_1$x[i],m_1$y[i],IPC_rsq,IPC_rmse,IPC_cookdist)
+      df<-rbind(df,t)
+      
+    }
+    colnames(df) = c('c_val','x','y','IPC_rsq','IPC_rmse','IPC_dcook')
+    
+    
+    # Removing the influential points 
+    min_IPC_rmse = min(df$IPC_rmse)
+    max_IPC_rsq = max(df$IPC_rsq)
+    
+    df = mutate(df,
+                to_remove = ifelse( IPC_rmse == min_IPC_rmse | IPC_rsq == max_IPC_rsq | IPC_dcook>1 ,'Y','N')
+    )
+    #Storing a copy to return for diagnostics
+    influential_points_df= df
+    
+    df = filter(df,to_remove == 'N')
+    
+    # m_1 will contain data points used finally for fitting the distribution, excluding the influential points
+    m_1 = df
+    IPC_sumx_noexcl<-sum(log(val+m_1$x))
+    IPC_sumy_noexcl<-sum(log(m_1$y-1))
+    IPC_xx_noexcl<-sum((log(val+m_1$x)) ^2 )
+    IPC_xy_noexcl<-sum((log(val+m_1$x)) * log(m_1$y-1))
+    IPC_sxx_noexcl<-IPC_xx_noexcl-(IPC_sumx_noexcl^2)/nrow(m_1)
+    IPC_sxy_noexcl<-IPC_xy_noexcl-IPC_sumx_noexcl * IPC_sumy_noexcl/nrow(m_1)
+    IPC_b_noexcl<-ifelse(IPC_sxx_noexcl==0,1,IPC_sxy_noexcl/IPC_sxx_noexcl)
+    IPC_a_noexcl<-IPC_sumy_noexcl/nrow(m_1)-IPC_b_noexcl*IPC_sumx_noexcl/nrow(m_1)
+    IPC_ss_res_noexcl<-sum((log(m_1$y-1)-(IPC_a_noexcl+IPC_b_noexcl*log(val+m_1$x)))^2)
+    IPC_ss_total_noexcl<-sum((log(m_1$y-1)-IPC_sumy_noexcl/nrow(m_1))^2)
+    IPC_rsq_noexcl<-1-ifelse(IPC_ss_total_noexcl==0,1,IPC_ss_res_noexcl/IPC_ss_total_noexcl)
+    
+    m_1$ycap_noexcl<-1+exp(IPC_a_noexcl+IPC_b_noexcl*log(m_1$x+val))
+    
+    # m contains the final calculated values of ldfs for all developments 3 through 294 
+    m$ycap_noexcl<-1+exp(IPC_a_noexcl+IPC_b_noexcl*log(m$x+val))
+    
+    # if there were <=2 data points for curve fit, then we do not fit a curve and take 1 as default curve fit values
+    if(nrow(df)<=2){
+      m$ycap_noexcl = 1
+    }
+  
+  }
+  else{
+    m$ycap_noexcl = 1
+    IPC_rsq_noexcl=0
+    influential_points_df=m
+    influential_points_df = mutate(influential_points_df,
+                                   ycap_noexcl=NULL,
+                                   IPC_rsq=0,
+                                   IPC_rmse=1,
+                                   IPC_dcook=1,
+                                   to_remove=NA
+    )
+  }  
+  
+  # Changing the development month labels to match with dev months everywhere else in code and in QV 
+  if(sml_flag=='L'){
+    m$x = seq(3*analysis_qtr,years_analyzed*12,by = 12)
+    influential_points_df$x = influential_points_df$x - 9/analysis_qtr
+  }
+  list_IPC = list(IPC_df = m,IPC_rsq = IPC_rsq_noexcl,influential_points_df = influential_points_df)
+  
+  return(list_IPC)
+}
+

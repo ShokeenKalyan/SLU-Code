@@ -1,0 +1,162 @@
+## Functions to recalculate various method ultimates on basis of LDF selected by MBR and other assmptions taken as input from Vena
+
+calc_BF_Inc_Loss<- function(d)
+{
+  # cy_budget_lr = d$Financial_Budget_LR[d$exp_year==analysis_year]
+  cy_lr =ifelse(d$BF_IELR[d$exp_year==analysis_year]==0,d$Financial_Budget_LR[d$exp_year==analysis_year],d$BF_IELR[d$exp_year==analysis_year])
+
+  d = mutate(d,BF_IELR_modified = ifelse(exp_year==analysis_year,
+                                         cy_lr,
+                                         ifelse(LTI==0,0,cy_lr*PAI/LTI)
+                                         )
+             )
+  
+  d = mutate(d,BF_IELR_modified = ifelse(is.na(BF_IELR_modified)|is.nan(BF_IELR_modified),0,BF_IELR_modified))
+  
+  d$BF_Ultimate=d$Gross_Incurred+(1-d$Cum_Percentages)*(d$Premium*d$BF_IELR_modified)
+  
+  return(d)
+  
+  # d$BF_IELR_modified[nrow(d)] = cy_budget_lr
+  # for(i in (nrow(d)-1):1){
+  #   d$BF_IELR_modified[i] = d$BF_IELR_modified[i+1]*d$PAI[i]/d$LTI[i]
+  # }
+}
+  
+calc_cc_IELR<-function(d,muf,sml_flag)
+{ 
+  if(sml_flag=='S'){
+    d=mutate(d,CC_Exp_weight = ifelse(exp_year<(analysis_year-years_analyzed_S_tailed+1),0,CC_Exp_weight))
+  } else if(sml_flag=='M'){
+    d=mutate(d,CC_Exp_weight = ifelse(exp_year<(analysis_year-years_analyzed_M_tailed+1),0,CC_Exp_weight))
+  } else {
+    d=mutate(d,CC_Exp_weight = ifelse(exp_year<(analysis_year-years_analyzed_L_tailed+1),0,CC_Exp_weight))
+  }
+  
+  
+  d$trended_dev_LR=(d$Gross_Incurred*d$LTI)/(d$Premium*d$PAI*d$Cum_Percentages)
+  d[is.na(d)]=0
+  d$trended_dev_LR[is.infinite(d$trended_dev_LR)]=0
+  fact=sum(d$trended_dev_LR*d$Premium*d$Cum_Percentages*d$PAI*d$CC_Exp_weight)/sum(d$Premium*d$Cum_Percentages*d$PAI*d$CC_Exp_weight)
+  d$CC_detrended_LR=(fact*d$PAI)/(d$LTI)
+  d$CC_detrended_LR[d$dev_len<=12]=fact
+  d[is.na(d)]=0
+  if(muf==1)
+  {
+    d$CC_Ultimate=d$Gross_Incurred+(1-d$Cum_Percentages)*d$Premium*d$Prev_Val_CC_Detrended_LR
+  }
+  else
+  {
+    d$CC_Ultimate=d$Gross_Incurred+(1-d$Cum_Percentages)*d$Premium*d$CC_detrended_LR
+  }
+  
+  return(d)
+}
+
+
+## For CC ultimate calculation ceded type
+
+calc_cc_IELR_ceded<-function(d,muf,sml_flag)
+{ 
+  if(sml_flag=='S'){
+    d=mutate(d,CC_Exp_weight = ifelse(exp_year<(analysis_year-years_analyzed_S_tailed+1),0,CC_Exp_weight))
+  } else if(sml_flag=='M'){
+    d=mutate(d,CC_Exp_weight = ifelse(exp_year<(analysis_year-years_analyzed_M_tailed+1),0,CC_Exp_weight))
+  } else {
+    d=mutate(d,CC_Exp_weight = ifelse(exp_year<(analysis_year-years_analyzed_L_tailed+1),0,CC_Exp_weight))
+  }
+  
+  
+  d$trended_dev_LR=(d$Gross_Incurred*d$LTI)/(d$Premium*d$PAI*d$Cum_Percentages)
+  d[is.na(d)]=0
+  d$trended_dev_LR[is.infinite(d$trended_dev_LR)]=0
+  
+  d$num = d$trended_dev_LR*d$Premium*d$Cum_Percentages*d$PAI*d$CC_Exp_weight
+  d$den = d$Premium*d$Cum_Percentages*d$PAI*d$CC_Exp_weight
+  # d = filter(d,Ri_type == 'Ceded CAP')
+  # fact = sum(d$trended_dev_LR*d$Premium*d$Cum_Percentages*d$PAI*d$CC_Exp_weight)/sum(d$Premium*d$Cum_Percentages*d$PAI*d$CC_Exp_weight)
+  # 
+  fact_df= d %>% group_by(Ri_type) %>% summarise(num = sum(num),den = sum(den))
+  fact_df$fact = fact_df$num/fact_df$den
+  fact_df = select(fact_df,c("Ri_type","fact"))
+                                               
+  d = left_join(d,fact_df,by = "Ri_type")
+                                                            
+                                                  
+  
+  d$CC_detrended_LR=(d$fact*d$PAI)/(d$LTI)
+  d$CC_detrended_LR[d$dev_len<=12]=d$fact
+  d[is.na(d)]=0
+  d = select(d,-c("num","den","fact"))
+  if(muf==1)
+  {
+    d$CC_Ultimate=d$Gross_Incurred+(1-d$Cum_Percentages)*d$Premium*d$Prev_Val_CC_Detrended_LR
+  }
+  else
+  {
+    d$CC_Ultimate=d$Gross_Incurred+(1-d$Cum_Percentages)*d$Premium*d$CC_detrended_LR
+  }
+  
+  return(d)
+}
+
+
+
+calc_LR_Ultimate = function(d)
+{
+  
+  cy_selected_lr_method_name= ifelse(d$BF_IELR_modified[d$exp_year==analysis_year]!=0
+                                     # & d$Financial_Budget_LR[d$exp_year==analysis_year]!=0
+                                     & d$BF_IELR_modified[d$exp_year==analysis_year]!= d$Financial_Budget_LR[d$exp_year==analysis_year],
+                                     'BF IELR MBR',
+                                     'Financial Budget Loss'
+  )
+  
+  
+  
+  # d = mutate(d,Selected_LR_Met_modified=ifelse(exp_year==analysis_year,cy_selected_lr_method_name,'Not Used'))
+  d = mutate(d,Selected_LR_Met_modified=ifelse(exp_year==analysis_year,cy_selected_lr_method_name,'BF IELR MBR'))
+  
+  for(i in 1:nrow(d))
+  {
+    if (d$Selected_LR_Met_modified[i]=='BF IELR MBR')
+    {
+      d$LR_Ultimate[i]=d$BF_IELR_modified[i]*d$Premium[i]
+    }
+    else if (d$Selected_LR_Met_modified[i]=='Actuarial Loss')
+    {
+      d$LR_Ultimate[i]=d$Actuarial_LR[i]*d$Premium[i]
+    }
+    else if (d$Selected_LR_Met_modified[i]=='Financial Budget Loss')
+    {
+      d$LR_Ultimate[i]=d$Financial_Budget_LR[i]*d$Premium[i]
+    }
+    else if (d$Selected_LR_Met_modified[i]=='Detrended LR (New)')
+    {
+      d$LR_Ultimate[i]=d$CC_detrended_LR[i]*d$Premium[i]
+    }
+    else 
+    {
+      d$LR_Ultimate[i]=0
+    }
+  }
+  return(d)
+}
+
+
+calc_RR_All_Ultimates = function(d){
+  
+  d$premium_rr_ultimate = d$Gross_Incurred+d$ibnr*d$Premium_Recovery_Ratio
+  d$incurred_rr_ultimate = d$Gross_Incurred+d$ibnr*d$Incurred_Recovery_Ratio
+  d$paid_rr_ultimate = d$Gross_Incurred+d$ibnr*d$Paid_Recovery_Ratio
+  d$LR_Ultimate = ifelse((d$exp_year==analysis_year)
+                         # & d$Financial_Budget_LR[d$exp_year==analysis_year]!=0
+                         & d$BF_IELR_modified[d$exp_year==analysis_year]== d$Financial_Budget_LR[d$exp_year==analysis_year],
+                         d$Gross_Incurred+d$Financial_Budget_LR*d$Premium,
+                         d$Gross_Incurred+d$BF_IELR_modified*d$Premium)
+  
+  #d$actuarial_rr_ultimate = d$Gross_Incurred+d$ibnr*d$Actuarial_Recovery_Ratio
+  
+  
+  return(d)
+}

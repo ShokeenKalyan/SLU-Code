@@ -1,0 +1,64 @@
+
+############
+# Functions to determine index of factors where there are 5 consecutive <1 factors and proportion of <1 factors between firt quarter and factor_one_index 
+############
+
+fn_get_less_than_one_factors_index = function(profile_id_analyzed,consecutive_less_than_one_num,x,index_cons_1){
+  
+  for(i in 1:(index_cons_1-consecutive_less_than_one_num+1)){
+    for(j in i:(i+consecutive_less_than_one_num-1)){
+      if(x[j]<1){
+        consecutive_less_than_one_flag = TRUE
+        consecutive_less_than_one_index=i
+      } else{
+        consecutive_less_than_one_flag = FALSE
+        break
+      }
+    }
+    
+    if(consecutive_less_than_one_flag==TRUE)
+      break
+    else
+      next
+  }
+  
+  # If there are no consecutive 1's then set the field to last value
+  if(consecutive_less_than_one_flag==FALSE){
+    consecutive_less_than_one_index = 0
+  }
+  
+  return(consecutive_less_than_one_index)
+  
+}
+
+# x parameter is the vector containing initial selections
+# Finding proportion of <1 factors between first quarter and factor_1_index quarter
+fn_get_prop_less_than_one_factors = function(profile_id_analyzed,x,index_cons_1){
+  
+  temp_df = x[1:(index_cons_1-1)]
+  prop_less_than_one_factors = length(temp_df[temp_df<1])/length(temp_df)
+  
+  return(prop_less_than_one_factors)
+}
+
+
+fn_get_default_last_index_less_than_one_factors = function(x,index_cons_1){
+  
+  x_df = data.frame(x)
+  x_df=mutate(x_df,lag_x = ifelse(is.na(lag(x)),1,lag(x)))
+  
+  x_df=mutate(x_df,incr_pct_change=ifelse(lag_x==0,0,x/lag_x-1))
+  
+  
+  x_df=mutate(x_df,
+              valid_point=ifelse(x<1 & lag_x<1 & incr_pct_change<=(-incr_pct_change_threshold),1,0),
+              valid_point_threshold=ifelse(x<1 & lag_x<1 & incr_pct_change<=(-incr_pct_change_threshold),1,0)
+              )
+  
+  
+  incr_pct_change_grt_than_threshold = any(x_df$valid_point_threshold[2:(index_cons_1-1)]==1)
+  default_last_index_less_than_one_factors = ifelse(any(x_df$valid_point==1),which.max(x_df$valid_point),index_cons_1)
+  
+  return(list(default_last_index_less_than_one_factors=default_last_index_less_than_one_factors,incr_pct_change_grt_than_threshold=incr_pct_change_grt_than_threshold))
+}
+

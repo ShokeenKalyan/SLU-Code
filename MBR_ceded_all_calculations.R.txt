@@ -1,0 +1,43 @@
+# Function for replicating all Ri_type in Gross dataframes
+fn_replicate_ri_type_df = function(gross_df,ri_type_df){
+  gross_df = gross_df %>% mutate(temp = 1)
+  all_ri_type_df = gross_df %>% inner_join(ri_type_df)
+  all_ri_type_df = select(all_ri_type_df,-c(temp))
+  return(all_ri_type_df)  
+}
+  
+
+# change Ri_type column type to character
+fn_change_to_character = function(df){
+  df$Ri_type = as.character(df$Ri_type)
+  
+  return(df)
+}
+
+# Apply non-valid ceded mapping to all export output
+
+fn_apply_non_val_ceded_map = function(df,ceded_profile_mapping){
+  df = left_join(df,select(ceded_profile_mapping,c("Product","Ri_type","is_valid_ceded")),by=c("profile_id"="Product","Ri_type"))
+  df = filter(df,is_valid_ceded==1)
+  df = select(df,-c("is_valid_ceded"))
+  
+  
+ return(df) 
+  
+}
+  
+
+fn_apply_non_val_ceded_map_1 = function(df,ceded_profile_mapping){
+  df = left_join(df,select(ceded_profile_mapping,c("Product","Ri_type","is_valid_ceded")),by=c("Product"="Product","Ri_type"))
+  df = filter(df,is_valid_ceded==1)
+  df = select(df,-c("is_valid_ceded"))
+  
+  
+  return(df) 
+  
+} 
+  
+  
+  
+  
+  

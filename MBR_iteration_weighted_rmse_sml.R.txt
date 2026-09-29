@@ -1,0 +1,200 @@
+####
+#Function to calculate weighted RMSE for each VW Average-n 
+####
+
+calc_VW_Averages_weighted_RMSE = function(VW_Averages_period_list,profile_id_analyzed,age_to_age_outliers,sml_flag){
+  
+  VW_Average_period = VW_Averages_period_list$Period
+  # if(VW_Average_period==7){ browser() }
+  
+  
+  VW_Averages_df = as.data.frame(t(VW_Averages_period_list$VW_Averages_matrix))
+  
+  # Removing an NA values in VW Averages. They arise in case of YY triangles since there are extra developments than YQ
+  if(sml_flag=='L') {VW_Averages_df = data.frame(V1=VW_Averages_df[1:years_analyzed,])}
+ 
+  
+  # Adding dev_len variable as per YQ or YY triangle
+  if(sml_flag=='L') {VW_Averages_df$dev_len = exp_year_dev_len$max_dev_len}
+    else VW_Averages_df$dev_len = as.integer(rownames(VW_Averages_df))*3
+  
+  Factors_df = data.frame(res_year = analysis_year,res_qtr=analysis_qtr,val_flag = analysis_val_flag,profile_id=profile_id_analyzed,dev_len=rev(VW_Averages_df$dev_len),Incr_Factors=rev(VW_Averages_df$V1))
+  
+  Factors_df$Cum_Factors = cumprod(Factors_df$Incr_Factors)
+  Factors_df$Cum_Percentages= 1/Factors_df$Cum_Factors
+  
+  age_to_age_outliers = left_join(age_to_age_outliers,
+                                  select(Factors_df,c( "dev_len","Incr_Factors","Cum_Factors","Cum_Percentages")),
+                                  by="dev_len")
+  
+  # VW Averages are computed after removing outliers and data points with 0 incurred (since age to age cant be calculated)
+  # All these exclusions are also made for the calculation of RMSE between age to age and VW Average_n
+  age_to_age_outliers = filter(age_to_age_outliers,outlier_flag==0)
+  age_to_age_outliers= arrange(age_to_age_outliers,dev_len,desc(exp_year))
+  age_to_age_outliers = filter(age_to_age_outliers,Gross_Incurred!=0)
+  age_to_age_outliers = arrange(age_to_age_outliers,dev_len,desc(exp_year))
+  
+  # Getting the number of combinations used for computing VW n and adjusting df age_to_age_outliers for it
+  exp_year_dev_len_cmbn_rmse = select(age_to_age_outliers,c(dev_len,exp_year)) %>% group_by(dev_len) %>% top_n(VW_Average_period)
+  age_to_age_outliers = inner_join(age_to_age_outliers,exp_year_dev_len_cmbn_rmse,by=c("exp_year","dev_len"))
+  
+  dev_len_rmse_df = age_to_age_outliers %>% group_by(dev_len) %>% summarise(dev_len_rmse=rmse(age_to_age,Incr_Factors))
+  dev_len_rmse_df = left_join(dev_len_rmse_df,Factors_df,by="dev_len")
+  
+  dev_len_rmse_df$weights = abs(1 - dev_len_rmse_df$Cum_Percentages)
+  
+  
+  weighted_rmse = dev_len_rmse_df %>% group_by() %>% summarise(weighted_rmse=sum(dev_len_rmse*weights)/sum(weights))
+  weighted_rmse = as.data.frame(weighted_rmse)
+  weighted_rmse$weighted_rmse = ifelse(is.nan(weighted_rmse$weighted_rmse),1,weighted_rmse$weighted_rmse)
+  
+  ######TO BE MODIFIED
+  if(nrow(dev_len_rmse_df)>2){
+    # wtd RMSE excluding first development period
+    weighted_rmse_excl1 = dev_len_rmse_df %>% slice_max(dev_len,n= nrow(dev_len_rmse_df)-1) %>% group_by() %>% summarise(weighted_rmse_excl1=sum(dev_len_rmse*weights)/sum(weights))
+    weighted_rmse_excl1 = as.data.frame(weighted_rmse_excl1)
+    weighted_rmse_excl1$weighted_rmse_excl1 = ifelse(is.nan(weighted_rmse_excl1$weighted_rmse_excl1),1,weighted_rmse_excl1$weighted_rmse_excl1)
+    
+  } else {
+    weighted_rmse_excl1=data.frame(weighted_rmse_excl1=1)
+
+  }
+  # wtd RMSE excluding first 2 development period
+  if(nrow(dev_len_rmse_df)>4){
+    
+    weighted_rmse_excl2 = dev_len_rmse_df %>% slice_max(dev_len,n= nrow(dev_len_rmse_df)-2) %>% group_by() %>% summarise(weighted_rmse_excl2=sum(dev_len_rmse*weights)/sum(weights))
+    weighted_rmse_excl2 = as.data.frame(weighted_rmse_excl2)
+    weighted_rmse_excl2$weighted_rmse_excl2 = ifelse(is.nan(weighted_rmse_excl2$weighted_rmse_excl2),1,weighted_rmse_excl2$weighted_rmse_excl2)
+    
+    # wtd RMSE excluding first 3 development period
+    weighted_rmse_excl3 = dev_len_rmse_df %>% slice_max(dev_len,n= nrow(dev_len_rmse_df)-3) %>% group_by() %>% summarise(weighted_rmse_excl3=sum(dev_len_rmse*weights)/sum(weights))
+    weighted_rmse_excl3 = as.data.frame(weighted_rmse_excl3)
+    weighted_rmse_excl3$weighted_rmse_excl3 = ifelse(is.nan(weighted_rmse_excl3$weighted_rmse_excl3),1,weighted_rmse_excl3$weighted_rmse_excl3)
+    
+    # wtd RMSE excluding first 4 development period
+    weighted_rmse_excl4 = dev_len_rmse_df %>% slice_max(dev_len,n= nrow(dev_len_rmse_df)-4) %>% group_by() %>% summarise(weighted_rmse_excl4=sum(dev_len_rmse*weights)/sum(weights))
+    weighted_rmse_excl4 = as.data.frame(weighted_rmse_excl4)
+    weighted_rmse_excl4$weighted_rmse_excl4 = ifelse(is.nan(weighted_rmse_excl4$weighted_rmse_excl4),1,weighted_rmse_excl4$weighted_rmse_excl4)
+  
+  } else {
+    weighted_rmse_excl2=data.frame(weighted_rmse_excl2=1)
+    weighted_rmse_excl3=data.frame(weighted_rmse_excl3=1)
+    weighted_rmse_excl4=data.frame(weighted_rmse_excl4=1)
+  }
+  
+  #######
+  
+  
+  results_list = list(weighted_rmse=weighted_rmse,Factors_df=Factors_df,weighted_rmse_excl1=weighted_rmse_excl1,weighted_rmse_excl2=weighted_rmse_excl2,weighted_rmse_excl3=weighted_rmse_excl3,weighted_rmse_excl4=weighted_rmse_excl4)
+  
+  return(results_list)
+  
+}
+
+
+
+
+####
+#Function to calculate weighted RMSE for each converged iteration
+####
+
+# converged_df = converged_list[[1]]
+
+calc_weighted_RMSE = function(converged_df,inc_by_ay,actuals_cum,profile_id_analyzed,sml_flag,max_non_zero_inc_year){
+  
+  
+  # Removing extra development periods in VW Averages. They arise in case of YY triangles since there are extra developments than YQ
+  if(sml_flag=='L') {converged_df = converged_df[1:years_analyzed,]}
+  
+  if(sml_flag=='L') {converged_df$dev_len = exp_year_dev_len$max_dev_len}
+  else converged_df$dev_len = as.integer(rownames(converged_df))*3
+  
+ 
+  Factors_df = data.frame(res_year = analysis_year,res_qtr=analysis_qtr,val_flag = analysis_val_flag,profile_id=profile_id_analyzed,dev_len=rev(converged_df$dev_len),Incr_Factors=rev(converged_df$Iteration_Values))
+  
+  # Incr_Factors = inner_join(converged_df,exp_year_dev_len,by = c('dev_len'='max_dev_len')) %>% select(c(Iteration_Values))
+  # Incr_Factors = rev(Incr_Factors$Iteration_Values)
+  Factors_df$Cum_Factors = cumprod(Factors_df$Incr_Factors)
+  Factors_df$Cum_Percentages= 1/Factors_df$Cum_Factors
+  
+  # Fetching relevant factors for the AYs
+  Factors_YY = inner_join(Factors_df,exp_year_dev_len,by = c('dev_len'='max_dev_len'))
+  
+  dfm_ultimate = select(Factors_YY,c(exp_year,dev_len,Incr_Factors,Cum_Factors,Cum_Percentages))
+  dfm_ultimate = mutate(dfm_ultimate,
+                            res_year = analysis_year,
+                            res_qtr=analysis_qtr,
+                            val_flag=analysis_val_flag,
+                            profile_id = profile_id_analyzed)
+  dfm_ultimate = select(dfm_ultimate,c(res_year,res_qtr,val_flag,profile_id,exp_year,dev_len,Incr_Factors,Cum_Factors,Cum_Percentages))
+  
+  dfm_ultimate = inner_join(dfm_ultimate,inc_by_ay,by = 'exp_year')
+  dfm_ultimate$Ultimate = dfm_ultimate$Cum_Factors*dfm_ultimate$Gross_Incurred
+  
+  actuals_cum = inner_join(actuals_cum,
+                           select(dfm_ultimate,c( "exp_year","Ultimate" )),
+                           by='exp_year')
+  actuals_cum = mutate(actuals_cum,
+                       inc_to_ult = ifelse(Ultimate==0,0,Cumulative_Gross_Incurred/Ultimate)
+  )
+  ## Filtering out vw_n exp_year
+  ##actuals_cum = actuals_cum %>% group_by(dev_len) %>% top_n(vw_n,exp_year) 
+  
+  actuals_cum = left_join(actuals_cum,
+                          select(Factors_df,c(dev_len,Cum_Percentages)),
+                          by='dev_len') 
+  rmse_check = as.data.frame(actuals_cum)
+  rmse_check = mutate(rmse_check,
+                      res_year = analysis_year,res_qtr=analysis_qtr,val_flag = analysis_val_flag)
+  rmse_check = select(rmse_check,c( res_year,res_qtr,val_flag,profile_id,exp_year,dev_len,Gross_Incurred,lower_tri_cmbn,Cumulative_Gross_Incurred,Ultimate,inc_to_ult,Cum_Percentages))
+  
+  # calculating an index to further calculate the number of observations in each development period group below
+  dev_row_count_adj = 9-3*analysis_qtr
+  
+  if(sml_flag=='L'){
+    oldest_year = max(max_non_zero_inc_year-years_analyzed_L_tailed+1,analysis_year-years_capped+1)
+    actuals_cum = filter(actuals_cum,exp_year>=oldest_year)
+  } else if(sml_flag=='S'){
+    oldest_year = max(max_non_zero_inc_year-years_analyzed_S_tailed+1,analysis_year-years_capped+1)
+    actuals_cum = filter(actuals_cum,exp_year>=oldest_year)
+  } else { # sml_flag=='M'
+    oldest_year = max(max_non_zero_inc_year-years_analyzed_M_tailed+1,analysis_year-years_capped+1)
+    actuals_cum = filter(actuals_cum,exp_year>=oldest_year)
+  }
+  
+  
+  
+  ##actuals_cum_rmse = actuals_cum %>% group_by(dev_len) %>% summarise(RMSE=sqrt(sum((inc_to_ult-Cum_Percentages)^2/(years_analyzed-as.integer((dev_row_count_adj + dev_len)/12))))
+  #)
+  
+  actuals_cum_rmse = actuals_cum %>% group_by(dev_len) %>% summarise(RMSE=rmse(inc_to_ult,Cum_Percentages))
+  
+  actuals_cum_rmse = as.data.frame(actuals_cum_rmse)
+  actuals_cum_rmse = left_join(actuals_cum_rmse,
+                               select(Factors_df,c(dev_len,Cum_Percentages)),
+                               by="dev_len")
+  actuals_cum_rmse$weights = abs(1 - actuals_cum_rmse$Cum_Percentages)
+  actuals_cum_rmse = as.data.frame(actuals_cum_rmse)
+  
+  weighted_rmse = actuals_cum_rmse %>% group_by() %>% summarise(weighted_rmse=sum(RMSE*weights)/sum(weights))
+  #weighted_rmse = filter(actuals_cum_rmse,dev_len>9) %>% group_by() %>% summarise(weighted_rmse=sum(RMSE*weights)/sum(weights))
+  weighted_rmse = as.data.frame(weighted_rmse)
+  weighted_rmse$weighted_rmse = ifelse(is.nan(weighted_rmse$weighted_rmse),1,weighted_rmse$weighted_rmse)
+  
+  
+  results_list = list(weighted_rmse=weighted_rmse,dfm_ultimate=dfm_ultimate,rmse_check=rmse_check,actuals_cum_rmse=actuals_cum_rmse,Factors_df=Factors_df)
+  
+  return(results_list)
+  
+}
+
+
+# Function for sapply command below
+filter_list = function(x){
+  if(x$Convergence[1] == 1) 
+    return(TRUE)
+  else
+    return(FALSE)
+}
+
+

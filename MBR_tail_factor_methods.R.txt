@@ -1,0 +1,53 @@
+######
+# Function to calculate experience based tail factor
+######
+
+fn_tail_factor_experience_method = function(initial_selected_incr_ldfs,factor_1_index,outlier_detection_last_dev_period_index){
+  
+  
+  if(outlier_detection_last_dev_period_index>factor_1_index){
+    # Take product of factors from factor_1_index
+    tail_factor_experience_method = prod(initial_selected_incr_ldfs[factor_1_index:outlier_detection_last_dev_period_index,])
+  } else tail_factor_experience_method = 1
+  
+  return(tail_factor_experience_method)
+}
+
+
+######
+# Function to calculate NCCI method based tail factor
+######
+
+fn_tail_factor_NCCI_method = function(cumulative_incurred_triangle_ncci,factor_1_index,factor_1_dev_month){
+  
+  # Sort the data on the basis of dev_len
+  cumulative_incurred_triangle_ncci = cumulative_incurred_triangle_ncci[order(cumulative_incurred_triangle_ncci$exp_year),]
+  
+  # Step 1
+  # Filter the data based on Profile and dev_len
+  data_filtered = cumulative_incurred_triangle_ncci %>% filter(dev_len == factor_1_dev_month)
+  
+  incr_dev = data_filtered[[which.max(data_filtered$exp_year),"Gross_Incurred"]]
+  
+  # Step 2
+  growth_factor = mean(data_filtered$Cumulative_Gross_Incurred[1:((which.max(data_filtered$exp_year[data_filtered$exp_year!=max(data_filtered$exp_year)])))], na.rm = TRUE)/data_filtered[[which.max(data_filtered$exp_year), "Cumulative_Gross_Incurred"]]
+  
+  # Step 3
+  data_filtered_2 = cumulative_incurred_triangle_ncci %>% filter(exp_year < max(cumulative_incurred_triangle_ncci$exp_year[which(cumulative_incurred_triangle_ncci$dev_len == factor_1_dev_month)])) 
+  data_filtered_2 = data_filtered_2 %>% filter(dev_len > factor_1_dev_month)
+  data_filtered_2 = data_filtered_2 %>% group_by(exp_year) 
+  data_filtered_2 = data_filtered_2 %>% filter(dev_len == max(dev_len))
+  
+  incr_dev_prior_ay = sum(data_filtered_2$Gross_Incurred)
+  
+  # Step 4
+  estimated_ay_incr_beyond_dev = incr_dev + (incr_dev_prior_ay/growth_factor)
+  
+  # Step 5
+  tail_factor_NCCI_method = 1 + (estimated_ay_incr_beyond_dev/data_filtered[[which.max(data_filtered$exp_year), "Cumulative_Gross_Incurred"]])
+  
+  
+  return(tail_factor_NCCI_method)
+}
+
+

@@ -1,0 +1,215 @@
+
+########################
+# Function parameters
+# iteration in which the replacement is to be done
+# start_index is the srarting index from where the replacement is to be done
+# end_index is the ending index
+########################
+
+
+best_rsq_replace = function(iteration,start_index,end_index,data,r_sq_data){
+  
+  if(unique(iteration$Convergence)==1){
+    
+    best_rsq_df = r_sq_data
+    best_rsq_df$replaceable = 0
+    
+    
+    # Checking if the distribution is fit for substituting iterations with the curve fit values
+    if(data[,as.character(best_rsq_df[1,'Distribution'])][start_index]<iteration$Iteration_Values[start_index-1]){
+      best_rsq_df$replaceable[1] = 1
+    }
+    if(data[,as.character(best_rsq_df[2,'Distribution'])][start_index]<iteration$Iteration_Values[start_index-1]){
+      best_rsq_df$replaceable[2] = 1
+    }
+    if(data[,as.character(best_rsq_df[3,'Distribution'])][start_index]<iteration$Iteration_Values[start_index-1]){
+      best_rsq_df$replaceable[3] = 1
+    }
+    if(data[,as.character(best_rsq_df[4,'Distribution'])][start_index]<iteration$Iteration_Values[start_index-1]){
+      best_rsq_df$replaceable[4] = 1
+    }
+    
+    # If no curve can replace values in iterations,we forcefully replace using the curve fit with max R Sq
+    if(sum(best_rsq_df$replaceable) == 0){
+      print(paste("Iteration values cannot be replaced.Still replacing from the curve with max R-Sq:",best_rsq_df$Distribution[1]))
+      best_rsq_df$replaceable[1] = 1
+    }
+    
+    # best_rsq_df is already sorted in decreasing order of R Sq values
+    for(i in 1:length(best_rsq_df$Distribution)){
+      if(best_rsq_df$replaceable[i]==1){
+        print(paste("Best R Sq Curve Replacement Curve :",best_rsq_df$Distribution[i]))
+        iteration$Iteration_Values_Original = iteration$Iteration_Values
+        iteration$Iteration_Values[start_index:end_index] = data[,as.character(best_rsq_df[i,'Distribution'])][start_index:end_index]
+        break
+      } else 
+        next
+    }
+    
+  }
+  
+  return(iteration)
+}
+
+# 
+# testdf = iterations_list[names(iterations_list) == profile_id_analyzed]
+# testdf = iterations_list[names(iterations_list) == profile_id_analyzed][[1]]
+# 
+# iterations_list$NA_PropOM_EquipBD_Att_AY[[1]] = testdf
+
+
+
+########################
+# Function parameters
+# x is the series to be validated
+# l is the level from which the function is called
+# d is the distribution from which the function is called
+# c is the global function call counter
+# t is the index tracker passed from one function call to subsequent call in recursion
+# k is the last index till where the series is to be validated
+########################
+
+
+validate_iteration = function(x,l,d,c,t,first_index,last_index,data,profile_id_analyzed,iter_algo_curves_to_use){
+
+  # stopping function execution if total number of iterations cross 50000
+  if(function_counter[profile_id_analyzed]>iteration_num_threshold){
+    profile_run_success_flag[profile_id_analyzed] <<- 0
+    return(0)
+  }
+    
+  function_counter[profile_id_analyzed] <<- function_counter[profile_id_analyzed]+1
+
+  
+  # adding the iteration details to global list iterations_list, indicated through operator <<-
+  iterations_list[[profile_id_analyzed]][[c]] <<- as.data.frame(cbind.data.frame(Iteration_Values=x,Level=l,Gen_From_Dist=d,Func_Call_Count=function_counter[profile_id_analyzed],Convergence=0))
+  
+  
+  # Checking the series for incorrect value
+  for(i in (first_index):(last_index))
+  { 
+    # creating variable j with value 1 for incorrect value
+    if(i==first_index)
+      j = ifelse(x[i]<0.99,1,0)
+    else
+      j = ifelse(x[i]<0.99 | x[i]>x[i-1],1,0)
+    
+    if(j==1)
+      break #Once we have found an incorrect value, we stop looping further and branch out to further iterations      
+  }
+  
+  # if incorrect value found, then replace it with available alternatives if any
+  if(j==1){
+    print(paste("Incorrect value found at index:",i))
+    
+    # Fetching index to be replaced. k will be the index. Checking the values from the incorrect index and upwards
+    for(k in i:first_index)
+    {
+      if(t[k]==0 & k>first_index){
+        
+        if(any(iter_algo_curves_to_use=='Exponential_Decay') & data$Exponential_Decay[k]>=1 & data$Exponential_Decay[k]<x[k-1] |
+           any(iter_algo_curves_to_use=='Inverse_Power') & data$Inverse_Power[k]>=1 & data$Inverse_Power[k]<x[k-1] | 
+           any(iter_algo_curves_to_use=='Power') & data$Power[k]>=1 & data$Power[k]<x[k-1] | 
+           any(iter_algo_curves_to_use=='Weibull') & data$Weibull[k]>=1 & data$Weibull[k]<x[k-1]){
+          print(paste("Value can be replaced from curve at index ",k))
+          break
+        } else
+          next
+      } else if(t[k]==0 & k==first_index){
+        if(any(iter_algo_curves_to_use=='Exponential_Decay') & data$Exponential_Decay[k]>=1 |
+           any(iter_algo_curves_to_use=='Inverse_Power') & data$Inverse_Power[k]>=1 |
+           any(iter_algo_curves_to_use=='Power') & data$Power[k]>=1 |
+           any(iter_algo_curves_to_use=='Weibull') & data$Weibull[k]>=1){
+          print(paste("Value can be replaced from curve at index ",k))
+          break
+        } else
+          next
+      } else{
+        print('Value cannot be replaced from curve fits.Algorithm did not converge.Stopping code execution')
+        k=0
+        break
+      }
+        
+    }
+    
+    
+    # Updating the local index_replacement_tracker
+    t[k] = 1
+    
+    # calling recursive functions when index to be replaced is not 1
+    if(k>first_index){
+      if(any(iter_algo_curves_to_use=='Exponential_Decay') & data$Exponential_Decay[k]>=1 & data$Exponential_Decay[k]<x[k-1]){
+        x_Exponential_Decay = x
+        x_Exponential_Decay[k] = data$Exponential_Decay[k]
+        
+        # Calling the function to validate iteration with level as level+1
+        validate_iteration(x_Exponential_Decay,l+1,'ExponentialDecay',function_counter[profile_id_analyzed],t,first_index,last_index,data,profile_id_analyzed,iter_algo_curves_to_use)
+      }  
+      
+      if(any(iter_algo_curves_to_use=='Inverse_Power') & data$Inverse_Power[k]>=1 & data$Inverse_Power[k]<x[k-1]){
+        x_Inverse_Power = x
+        x_Inverse_Power[k] = data$Inverse_Power[k]
+        # Calling the function to validate iteration with level as level+1
+        validate_iteration(x_Inverse_Power,l+1,'InversePower',function_counter[profile_id_analyzed],t,first_index,last_index,data,profile_id_analyzed,iter_algo_curves_to_use)
+      }
+      
+      if(any(iter_algo_curves_to_use=='Power') & data$Power[k]>=1 & data$Power[k]<x[k-1]){
+        x_Power = x
+        x_Power[k] = data$Power[k]
+        # Calling the function to validate iteration with level as level+1
+        validate_iteration(x_Power,l+1,'Power',function_counter[profile_id_analyzed],t,first_index,last_index,data,profile_id_analyzed,iter_algo_curves_to_use)
+      }
+      
+      if(any(iter_algo_curves_to_use=='Weibull') & data$Weibull[k]>=1 & data$Weibull[k]<x[k-1]){
+        x_Weibull = x
+        x_Weibull[k] = data$Weibull[k]
+        # Calling the function to validate iteration with level as level+1
+        validate_iteration(x_Weibull,l+1,'Weibull',function_counter[profile_id_analyzed],t,first_index,last_index,data,profile_id_analyzed,iter_algo_curves_to_use)
+      }
+    }
+    
+    # calling recursive functions when index to be replaced is 1
+    if(k==first_index){
+      if(any(iter_algo_curves_to_use=='Exponential_Decay') & data$Exponential_Decay[k]>=1){
+        x_Exponential_Decay = x
+        x_Exponential_Decay[k] = data$Exponential_Decay[k]
+        
+        # Calling the function to validate iteration with level as level+1
+        validate_iteration(x_Exponential_Decay,l+1,'ExponentialDecay',function_counter[profile_id_analyzed],t,first_index,last_index,data,profile_id_analyzed,iter_algo_curves_to_use)
+      }  
+      
+      if(any(iter_algo_curves_to_use=='Inverse_Power') & data$Inverse_Power[k]>=1){
+        x_Inverse_Power = x
+        x_Inverse_Power[k] = data$Inverse_Power[k]
+        # Calling the function to validate iteration with level as level+1
+        validate_iteration(x_Inverse_Power,l+1,'InversePower',function_counter[profile_id_analyzed],t,first_index,last_index,data,profile_id_analyzed,iter_algo_curves_to_use)
+      }
+      
+      if(any(iter_algo_curves_to_use=='Power') & data$Power[k]>=1){
+        x_Power = x
+        x_Power[k] = data$Power[k]
+        # Calling the function to validate iteration with level as level+1
+        validate_iteration(x_Power,l+1,'Power',function_counter[profile_id_analyzed],t,first_index,last_index,data,profile_id_analyzed,iter_algo_curves_to_use)
+      }
+      
+      if(any(iter_algo_curves_to_use=='Weibull') & data$Weibull[k]>=1){
+        x_Weibull = x
+        x_Weibull[k] = data$Weibull[k]
+        # Calling the function to validate iteration with level as level+1
+        validate_iteration(x_Weibull,l+1,'Weibull',function_counter[profile_id_analyzed],t,first_index,last_index,data,profile_id_analyzed,iter_algo_curves_to_use)
+      }
+    }
+    
+    
+    print("Value cannot be replaced from curve fits.Algorithm did not converge")  
+  }      
+  
+  
+  # If all conditions are met successfully for an iteration 
+  if(j==0){
+    print("Algorithm converged")
+    iterations_list[[profile_id_analyzed]][[c]][5] <<- 1
+  }
+  
+  return(0)
+}

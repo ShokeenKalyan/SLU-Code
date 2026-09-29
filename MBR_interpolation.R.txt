@@ -1,0 +1,80 @@
+#Interpolation code for Long tail profiles
+
+calc_interpolation = function(profile){
+  #profile = "AERO_Airports-Products"
+  #res_qtr = analysis_qtr
+  df_1 = filter(MBR_Cum_Percentages_Vena_df_L,profile_id == profile )
+  df_1 <- df_1[order(df_1$dev_len, decreasing = FALSE),]
+  pattern = c(df_1$Cum_Percentages)
+  
+  if (analysis_qtr == 3){
+    x1 = c(0,3,6,9)
+    y1 = c(0,0,0,pattern[1])
+    func = splinefun(x=x1, y=y1, method="natural",  ties = mean)
+    result1 = as.data.frame(func(seq(1, 3,1)))
+    result1 = cbind(c(1:nrow(result1)),result1)
+    colnames(result1)[1]= 'Dev Month'
+    colnames(result1)[2] ='Pattern'
+    
+    
+    x = seq(9,297,12)
+    x = c(0,x)
+    y = c(0,pattern)
+    func = splinefun(x=x, y=y, method="natural",  ties = mean)
+    result = as.data.frame(func(seq(3, 297,1)))
+    result = cbind(c(1:nrow(result)+2),result)
+    colnames(result)[1] = 'Dev Month'
+    colnames(result)[2] = 'Pattern'
+    result = result[-1,]
+    result_final = rbind(result1,result)
+    
+  } else{
+  
+      
+  #x1 = c(0,3,6,9)
+  #y1 = c(0,0,0,pattern[1])
+  #func = splinefun(x=x1, y=y1, method="natural",  ties = mean)
+  #result1 = as.data.frame(func(seq(1, 3,1)))
+  #result1 = cbind(c(1:nrow(result1)),result1)
+ # colnames(result1)[1]= 'Dev Month'
+ # colnames(result1)[2] ='Pattern'
+  
+  x = seq(3,291,12)
+  x = c(0,x)
+  y = c(0,pattern)
+  func = splinefun(x=x, y=y, method="natural",  ties = mean)
+  result = as.data.frame(func(seq(3, 291,1)))
+  result = cbind(c(1:nrow(result)+2),result)
+  colnames(result)[1] = 'Dev Month'
+  colnames(result)[2] = 'Pattern'
+  
+  
+  result_final = result
+  }
+  
+  
+  dev_len = seq(3,3*4*years_analyzed-3*(4-analysis_qtr),by=3)
+  result_final = filter(result_final,`Dev Month` %in% dev_len)
+  result_final$"profile_id" = profile
+  names(result_final) = c("dev_len","Cum_Percentages","profile_id")
+  
+  
+ return(result_final) 
+  
+}
+
+
+## Making all values 1 if consecutive 1 is found #############
+func_convert_after_first_one = function(profile){
+  #interpolation_result = result_final
+  df = filter(interpolation_result,profile_id == profile )
+  min_index = which(df$Cum_Percentages==1)[1]
+  
+  if (!is.na(min_index)) {
+    df$Cum_Percentages[min_index:length(df$Cum_Percentages)] =1
+  }
+  
+  return(df)
+  
+}
+
