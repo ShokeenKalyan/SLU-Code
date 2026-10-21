@@ -1,439 +1,700 @@
 # Python Project Design — MBR/SLU on Azure Databricks
 
-This document covers three things:
-1. **Project Structure** — how the Python code is organized and why
-2. **Key Design Decisions** — what changes from R and why
-3. **Task Breakdown & Timeline** — what to build, in what order, and how long it takes
+This document is written assuming you are new to Python and Databricks. It explains everything from the ground up.
+
+It covers four things:
+1. **Background Concepts** — how R and Python organize code differently (and what Databricks is)
+2. **The Simple Project Structure** — a flat, easy-to-follow file layout to start with
+3. **Key Design Decisions** — what changes from R and why
+4. **Task Breakdown & Timeline** — what to build, in what order, and how long it takes
 
 ---
 
-## Part 1: Project Structure
+## Part 1: Background Concepts
 
-### The folder layout
+### How R organizes code (what you already know)
+
+In R, the current MBR project looks like this:
+
+```
+SLU/
+├── SLU_main_code.R              ← The big main file that runs everything
+├── MBR_weighted_average.R       ← Helper file with functions
+├── MBR_curve_fit.R              ← Helper file with functions
+├── MBR_iteration_algorithm.R    ← Helper file with functions
+├── ... (10 more helper .R files)
+```
+
+How it works:
+- `SLU_main_code.R` is the file you run
+- Inside it, `source("MBR_weighted_average.R")` loads that file
+- After `source()`, all the functions defined in that file become available
+- It is as if you copy-pasted that file's code into the main file at that point
+- All files share the same "workspace" — any variable or function is visible everywhere
+
+This is simple but has a downside: everything is dumped into one big shared space. If file A creates a variable called `result` and file B also creates one called `result`, they overwrite each other silently.
+
+### How Python organizes code (the new world)
+
+Python does something very similar, but with one important difference: **each file is its own isolated space**.
+
+In Python:
+- Each `.py` file is called a **"module"**
+- You use `import` instead of `source()` to bring in code from another file
+- When you import, you get access to that file's functions, but they stay "inside" that file's name
+
+Here is a concrete side-by-side comparison:
+
+```
+R way:                                  Python way:
+─────────                               ───────────
+source("MBR_curve_fit.R")              import curve_fit
+result <- exponentialfunc(data)         result = curve_fit.exponentialfunc(data)
+```
+
+Notice the difference: in Python, you write `curve_fit.exponentialfunc()` — the function name is prefixed with the file it came from. This is a good thing: you always know which file a function lives in.
+
+You can also import specific functions directly if you prefer the shorter syntax:
+
+```python
+from curve_fit import exponentialfunc
+
+result = exponentialfunc(data)     # now you can use it without the prefix
+```
+
+**That is the core idea. Everything else is details.**
+
+### What is `__init__.py`? (and why you can ignore it for now)
+
+When you see `__init__.py` in Python projects, it is a special file that tells Python "this folder is a package" (a group of related modules). It is usually an empty file.
+
+**You do not need this for the simple structure we will use.** It only matters when you organize files into sub-folders. We will keep everything flat (all files in one folder) to start, just like the R project. We can reorganize into sub-folders later when you are comfortable.
+
+### What is Databricks? (the 60-second version)
+
+Think of Databricks as a website where you can:
+1. **Write code** in files (like a code editor in your browser)
+2. **Run code** on powerful cloud computers (called "clusters")
+3. **Connect to databases** to read and write data
+4. **Schedule jobs** to run automatically (like a cron job)
+
+When you log into Databricks, you see a **Workspace** — it is like a file explorer with folders and files. You can create folders, create files, and organize things however you want.
+
+There are two types of files you will work with:
+
+| Type | What it is | How you use it |
+|---|---|---|
+| **Notebook** (`.py`) | A file where you write and run code interactively, cell by cell | Your `main.py` will be a notebook — you click "Run All" to execute |
+| **Python file** (`.py`) | A regular code file with functions | Your helper files (curve_fit.py, etc.) — imported by the notebook |
+
+Both are `.py` files, but notebooks have a special format that lets you run code in chunks (called "cells"). Think of a notebook as a scratchpad where you can run things step by step and see results immediately. Regular `.py` files are just containers for functions.
+
+### What will this look like in Databricks?
+
+When you open Databricks and go to your Workspace, you will see something like this:
+
+```
+Workspace (the left sidebar in Databricks)
+│
+├── Users/
+│   └── your.name@company.com/
+│       └── mbr_slu/                    ← Your project folder
+│           ├── main.py                  ← Notebook (click "Run All" to execute)
+│           ├── config.py                ← Regular Python file
+│           ├── data_reader.py           ← Regular Python file
+│           ├── data_writer.py           ← Regular Python file
+│           ├── vena_transform.py        ← Regular Python file
+│           ├── triangles.py             ← Regular Python file
+│           ├── weighted_average.py      ← Regular Python file
+│           ├── curve_fit.py             ← Regular Python file
+│           ├── iteration.py             ← Regular Python file
+│           ├── rmse.py                  ← Regular Python file
+│           ├── actuarial_methods.py     ← Regular Python file
+│           ├── method_selection.py      ← Regular Python file
+│           ├── factors.py               ← Regular Python file
+│           ├── ceded.py                 ← Regular Python file
+│           ├── interpolation.py         ← Regular Python file
+│           └── helpers.py               ← Regular Python file
+```
+
+It looks just like a folder on your computer. You click on any file to open and edit it. You click on `main.py` to run the whole pipeline.
+
+---
+
+## Part 2: The Simple Project Structure
+
+### The layout (flat and simple — just like R)
 
 ```
 mbr_slu/
 │
-├── notebooks/
-│   └── run_pipeline.py              ← The Databricks notebook that kicks everything off
+├── main.py                    ← THE file you run. Orchestrates everything.
 │
-├── mbr/
-│   ├── __init__.py                  ← Makes this folder a Python package
-│   ├── config.py                    ← All configuration (dates, thresholds, DB connection info)
-│   ├── pipeline.py                  ← Runs the full pipeline for one profile (the "main" logic)
-│   │
-│   ├── data/
-│   │   ├── __init__.py
-│   │   ├── sql_reader.py            ← Reads data from Snowflake/SQL via Spark JDBC
-│   │   ├── sql_writer.py            ← Writes results back to SQL / Delta tables
-│   │   ├── vena_transform.py        ← The Vena ETL (converts Vena Excel → structured data)
-│   │   └── excel_io.py              ← Excel read/write utilities
-│   │
-│   ├── triangles/
-│   │   ├── __init__.py
-│   │   ├── builder.py               ← Builds loss development triangles from raw data
-│   │   └── outlier_detection.py     ← Adjusted boxplot outlier detection (medcouple)
-│   │
-│   ├── development/
-│   │   ├── __init__.py
-│   │   ├── weighted_average.py      ← Volume-weighted average LDFs (best-N selection)
-│   │   ├── curve_fit.py             ← 4-curve parametric fitting (Weibull, etc.)
-│   │   ├── iteration.py             ← The core iteration algorithm (tree-search)
-│   │   └── rmse.py                  ← Weighted RMSE scoring (used everywhere)
-│   │
-│   ├── methods/
-│   │   ├── __init__.py
-│   │   ├── actuarial_methods.py     ← DFM, BF, Cape Cod, Loss Ratio ultimates
-│   │   ├── method_selection.py      ← Rule-based + RMSE hindsight method selection
-│   │   └── ceded.py                 ← Ceded/reinsurance calculations
-│   │
-│   ├── factors/
-│   │   ├── __init__.py
-│   │   ├── factor_one_index.py      ← Find where LDFs stabilize at 1.0
-│   │   ├── factor_less_than_one.py  ← Detect sub-1.0 anomalous factors
-│   │   ├── tail_factors.py          ← Tail factor computation
-│   │   └── interpolation.py         ← Annual-to-quarterly spline interpolation
-│   │
-│   └── utils/
-│       ├── __init__.py
-│       └── helpers.py               ← Shared small utilities (date math, formatting, etc.)
+├── config.py                  ← Settings: dates, thresholds, database connection info
+├── data_reader.py             ← Reads data from SQL database
+├── data_writer.py             ← Writes results to SQL database and Excel
+├── vena_transform.py          ← Transforms Vena Excel exports into usable format
 │
-├── tests/
-│   ├── __init__.py
-│   ├── test_triangles.py
-│   ├── test_weighted_average.py
-│   ├── test_curve_fit.py
-│   ├── test_iteration.py
-│   ├── test_actuarial_methods.py
-│   ├── test_method_selection.py
-│   ├── test_factors.py
-│   ├── test_interpolation.py
-│   ├── test_ceded.py
-│   ├── test_rmse.py
-│   └── fixtures/                    ← Saved R outputs used as test "golden" data
-│       └── ...
+├── triangles.py               ← Builds loss triangles + outlier detection
+├── weighted_average.py        ← Volume-weighted average LDFs
+├── curve_fit.py               ← Fits 4 mathematical curves to LDF patterns
+├── iteration.py               ← The core iteration algorithm (tree-search)
+├── rmse.py                    ← Weighted RMSE scoring (used by several steps)
 │
-└── requirements.txt                 ← Python dependencies
+├── actuarial_methods.py       ← DFM, BF, Cape Cod, Loss Ratio calculations
+├── method_selection.py        ← Picks best actuarial method per exposure year
+├── factors.py                 ← Factor-one index, factor-less-than-one, tail factors
+├── ceded.py                   ← Ceded/reinsurance calculations
+├── interpolation.py           ← Annual-to-quarterly conversion (spline)
+│
+└── helpers.py                 ← Small shared utilities (date math, formatting)
 ```
 
-### How R files map to Python files
+**That is it. 16 files. All in one folder. No sub-folders. No `__init__.py`.**
 
-This table shows exactly where each R file's logic ends up:
+This is intentionally simple. It mirrors the R structure:
+- R has 1 main file + 13 helper files → Python has 1 main file + 15 helper files
+- R uses `source()` → Python uses `import`
+- Both are flat (all files in the same folder)
 
-| R Source File | Python File | Folder |
+The only difference from R is that the 3,924-line main R file is split into a few smaller files (config, data_reader, data_writer, main) instead of one giant file. This makes each file easier to read and debug.
+
+### How each R file maps to a Python file
+
+| R File | Python File | What it does |
 |---|---|---|
-| `SLU_main_code.R.txt` (orchestration part) | `pipeline.py` | `mbr/` |
-| `SLU_main_code.R.txt` (data loading part) | `sql_reader.py` | `mbr/data/` |
-| `SLU_main_code.R.txt` (triangle building part) | `builder.py` | `mbr/triangles/` |
-| `SLU_main_code.R.txt` (export part) | `sql_writer.py`, `excel_io.py` | `mbr/data/` |
-| `MBR_vena_data_transformation_adhoc.R.txt` | `vena_transform.py` | `mbr/data/` |
-| `MBR_weighted_average.R.txt` | `weighted_average.py` | `mbr/development/` |
-| `MBR_iteration_weighted_rmse_sml.R.txt` | `rmse.py` | `mbr/development/` |
-| `MBR_curve_fit.R.txt` | `curve_fit.py` | `mbr/development/` |
-| `MBR_iteration_algorithm_0.99_modified.R.txt` | `iteration.py` | `mbr/development/` |
-| `MBR_factor_one_index.R.txt` | `factor_one_index.py` | `mbr/factors/` |
-| `MBR_factor_less_than_one_index.R.txt` | `factor_less_than_one.py` | `mbr/factors/` |
-| `MBR_tail_factor_methods.R.txt` | `tail_factors.py` | `mbr/factors/` |
-| `MBR_threshold_ultimate_weighted_RMSE.R.txt` | `rmse.py` (added here) | `mbr/development/` |
-| `MBR_actuarial_method_ultimates.R.txt` | `actuarial_methods.py` | `mbr/methods/` |
-| `MBR_method_selection_by_exposure_year_cc_change.R.txt` | `method_selection.py` | `mbr/methods/` |
-| `MBR_ceded_all_calculations.R.txt` | `ceded.py` | `mbr/methods/` |
-| `MBR_interpolation.R.txt` | `interpolation.py` | `mbr/factors/` |
+| `SLU_main_code.R` (orchestration) | `main.py` | Runs the full pipeline |
+| `SLU_main_code.R` (config/setup) | `config.py` | Stores settings and parameters |
+| `SLU_main_code.R` (SQL reads) | `data_reader.py` | Loads data from database |
+| `SLU_main_code.R` (SQL writes + Excel) | `data_writer.py` | Saves results |
+| `MBR_vena_data_transformation_adhoc.R` | `vena_transform.py` | Vena ETL |
+| `MBR_weighted_average.R` | `triangles.py` (outlier part) + `weighted_average.py` | Outliers + VW averages |
+| `MBR_curve_fit.R` | `curve_fit.py` | 4 curve fits |
+| `MBR_iteration_algorithm_0.99_modified.R` | `iteration.py` | Tree-search iteration |
+| `MBR_iteration_weighted_rmse_sml.R` | `rmse.py` | RMSE scoring |
+| `MBR_threshold_ultimate_weighted_RMSE.R` | `rmse.py` (included here) | Tail threshold RMSE |
+| `MBR_factor_one_index.R` | `factors.py` | Factor-one index |
+| `MBR_factor_less_than_one_index.R` | `factors.py` (included here) | Sub-1.0 factor detection |
+| `MBR_tail_factor_methods.R` | `factors.py` (included here) | Tail factor computation |
+| `MBR_actuarial_method_ultimates.R` | `actuarial_methods.py` | DFM, BF, CC, LR |
+| `MBR_method_selection_by_exposure_year_cc_change.R` | `method_selection.py` | Method selection |
+| `MBR_ceded_all_calculations.R` | `ceded.py` | Ceded/reinsurance |
+| `MBR_interpolation.R` | `interpolation.py` | Spline interpolation |
 
----
+Notice that three small R files (`factor_one_index`, `factor_less_than_one_index`, `tail_factor_methods`) are combined into one Python file (`factors.py`). They are each 50-65 lines in R — too small to be their own file. Similarly, the threshold RMSE script is merged into `rmse.py`. This keeps the number of files manageable.
 
-## Part 2: Key Design Decisions (and why)
+### What the main.py file looks like (the big picture)
 
-### Why this structure?
-
-The R codebase has 1 giant main file (3,924 lines) and 13 helper files all sitting flat in one folder. That works in R because `source()` just dumps everything into one shared scope. Python does not work that way — it uses `import`, which means each file is a separate module with its own scope. This is actually an advantage: it forces cleaner boundaries.
-
-The Python structure groups files by **what part of the pipeline they belong to**:
-
-```
-data/          → Getting data in and out
-triangles/     → Building and cleaning the loss triangles
-development/   → The core LDF selection process (VW avg → curves → iteration)
-methods/       → Actuarial methods and final selection
-factors/       → Tail factors, indexes, and interpolation
-utils/         → Small shared helpers
-```
-
-If you are debugging why a tail factor looks wrong, you go to `mbr/factors/`. If the curve fit is failing, you go to `mbr/development/`. You never need to search a 3,924-line file.
-
-### How the "global state" problem is solved
-
-**The R problem:** The R code uses `<<-` (global assignment) roughly 50-80 times. Every function writes to shared global variables that other functions read. This means function A sets a variable, function B reads it, function C changes it — all without any of them declaring this in their signatures. It works, but it is very hard to trace what depends on what.
-
-**The Python solution: a `ProfileState` dictionary.**
-
-Instead of global variables, each profile gets a single dictionary that holds all its data as it flows through the pipeline. Each function takes this dictionary as input, reads what it needs, adds its results, and returns it.
+Here is a simplified sketch of `main.py`. This is the Python equivalent of `SLU_main_code.R`:
 
 ```python
-# In pipeline.py — simplified view of how a profile runs
+# main.py — The MBR/SLU Pipeline
+# This is the file you run. It calls all the other files in order.
 
-def run_profile(profile_id, config):
-    """Run the full MBR pipeline for one profile."""
+# ── Step 0: Import all the helper files ─────────────────────
+# This is the Python equivalent of R's source() calls.
+# It makes all functions from those files available here.
 
-    # This dictionary carries ALL data for this profile through the pipeline.
-    # Each step reads from it and adds its results to it.
+import config
+import data_reader
+import data_writer
+import vena_transform
+import triangles
+import weighted_average
+import curve_fit
+import iteration
+import rmse
+import actuarial_methods
+import method_selection
+import factors
+import ceded
+import interpolation
+
+
+# ── Step 1: Load configuration ──────────────────────────────
+
+settings = config.load_config()
+# settings now contains: evaluation_date, sml_thresholds,
+# database connection info, etc.
+
+
+# ── Step 2: Load data ───────────────────────────────────────
+
+raw_data = data_reader.load_all_data(settings)
+vena_overrides = vena_transform.process_vena_data(settings)
+
+
+# ── Step 3: Get list of profiles to run ─────────────────────
+
+profile_list = data_reader.get_profile_list(settings)
+
+
+# ── Step 4: Process each profile ────────────────────────────
+
+all_results = []
+
+for profile_id in profile_list:
+
+    # This dictionary carries all data for one profile
+    # through the pipeline. Think of it as a bag that each
+    # step puts its results into.
     state = {}
 
-    # Step 1: Load data
-    state["raw_data"] = sql_reader.load_profile_data(profile_id, config)
-    state["vena_overrides"] = vena_transform.get_overrides(profile_id, config)
+    # 4a. Get this profile's data
+    state["profile_data"] = data_reader.get_profile_data(profile_id, raw_data)
+    state["overrides"] = vena_transform.get_profile_overrides(profile_id, vena_overrides)
 
-    # Step 2: Build triangles
-    state["triangle"] = builder.build_triangle(state["raw_data"], config)
+    # 4b. Build loss triangle
+    state["triangle"] = triangles.build(state["profile_data"], settings)
 
-    # Step 3: Outlier detection
-    state["outliers"] = outlier_detection.detect(state["triangle"])
+    # 4c. Detect outliers
+    state["outliers"] = triangles.detect_outliers(state["triangle"])
 
-    # Step 4: Volume-weighted averages
-    state["vw_averages"] = weighted_average.compute(state["triangle"], state["outliers"])
+    # 4d. Compute volume-weighted averages
+    state["vw_avg"] = weighted_average.compute(state["triangle"], state["outliers"])
 
-    # Step 5: Score VW averages → pick best-N
-    state["best_n"] = rmse.select_best_n(state["vw_averages"], state["triangle"])
+    # 4e. Score and pick best-N
+    state["best_n"] = rmse.select_best_n(state["vw_avg"], state["triangle"])
 
-    # Step 6: Curve fitting
+    # 4f. Fit curves
     state["curves"] = curve_fit.fit_all(state["best_n"])
 
-    # Step 7: Iteration algorithm
+    # 4g. Run iteration algorithm
     state["iterations"] = iteration.run(state["best_n"], state["curves"])
+    state["selected_ldfs"] = rmse.select_best_iteration(state["iterations"])
 
-    # Step 8: Score iterations → pick best
-    state["selected_ldfs"] = rmse.select_best_iteration(state["iterations"], state["triangle"])
+    # 4h. Compute factor indexes and tail
+    state["factor_one_idx"] = factors.get_factor_one_index(state["selected_ldfs"])
+    state["factor_lt_one"] = factors.get_factor_less_than_one(state["selected_ldfs"])
+    state["tail"] = factors.compute_tail(state["selected_ldfs"], state["curves"])
 
-    # Step 9: Factor indexes
-    state["factor_one_idx"] = factor_one_index.compute(state["selected_ldfs"])
-    state["factor_lt_one"] = factor_less_than_one.compute(state["selected_ldfs"])
+    # 4i. Compute actuarial method ultimates
+    state["ultimates"] = actuarial_methods.compute_all(state, settings)
 
-    # Step 10: Tail factors
-    state["tail"] = tail_factors.compute(state["selected_ldfs"], state["curves"], state["factor_one_idx"])
+    # 4j. Select best method per exposure year
+    state["selected"] = method_selection.select(state, settings)
 
-    # Step 11: Actuarial methods
-    state["ultimates"] = actuarial_methods.compute_all(state, config)
+    # 4k. Ceded/reinsurance
+    state["ceded"] = ceded.compute(state, settings)
 
-    # Step 12: Method selection
-    state["selected"] = method_selection.select(state["ultimates"], state["triangle"], config)
+    # 4l. Interpolation (long-tailed only)
+    if settings["sml_flag"] == "L":
+        state["quarterly"] = interpolation.annual_to_quarterly(state["selected_ldfs"])
 
-    # Step 13: Ceded/reinsurance
-    state["ceded"] = ceded.compute(state, config)
+    all_results.append(state)
 
-    # Step 14: Interpolation (long-tailed profiles only)
-    if config.sml_flag == "L":
-        state["quarterly"] = interpolation.convert(state["selected_ldfs"])
 
-    return state
+# ── Step 5: Export results ──────────────────────────────────
+
+data_writer.write_to_sql(all_results, settings)
+data_writer.write_to_excel(all_results, settings)
+data_writer.write_to_vena(all_results, settings)
 ```
 
-**Why this is better:**
-- You can see exactly what each step needs and what it produces
-- You can test any step in isolation by giving it a pre-built `state` dictionary
-- You can print `state` at any point to see exactly what data exists
-- No hidden dependencies — everything is explicit
+**Compare this to how R does it:**
 
-### How parallel processing works on Databricks
+| Step | R (SLU_main_code.R) | Python (main.py) |
+|---|---|---|
+| Load helpers | `source("MBR_curve_fit.R")` | `import curve_fit` |
+| Call a function | `exponentialfunc(data)` | `curve_fit.exponentialfunc(data)` |
+| Share data between steps | Global variables via `<<-` | The `state` dictionary |
+| Loop over profiles | `parLapply(cl, profiles, run_mbr)` | `for profile_id in profile_list:` |
 
-In R, the code uses `parLapply` to process profiles across 10 CPU cores on a single machine. On Databricks, you have a cluster with many machines, so you get much more parallelism for free.
+### What a helper file looks like
+
+Here is what `factors.py` looks like — it is just a file with functions in it:
 
 ```python
-# In notebooks/run_pipeline.py — the Databricks entry point
+# factors.py — Factor indexes and tail factor computation
+#
+# This file contains three groups of functions, merged from
+# three small R files:
+#   - MBR_factor_one_index.R        → get_factor_one_index()
+#   - MBR_factor_less_than_one.R    → get_factor_less_than_one()
+#   - MBR_tail_factor_methods.R     → compute_tail()
 
-from mbr.config import load_config
-from mbr.pipeline import run_profile
-from mbr.data import sql_reader, sql_writer
 
-# Load configuration
-config = load_config()
+def get_factor_one_index(selected_ldfs, threshold):
+    """
+    Find the first development period where LDFs stabilize at 1.0.
+    Scans from right to left.
 
-# Get the list of profiles to process
-profiles = sql_reader.get_profile_list(config)
+    This is the Python version of fn_get_end_triangle_index() from R.
+    """
+    # ... actual logic here ...
+    return factor_one_index
 
-# Option A: Simple loop (good for debugging — runs one at a time)
-results = []
-for profile_id in profiles:
-    result = run_profile(profile_id, config)
-    results.append(result)
 
-# Option B: Spark parallel (production — distributes across cluster)
-# Each profile runs independently on a different worker node
-from pyspark.sql import SparkSession
-spark = SparkSession.builder.getOrCreate()
+def get_factor_less_than_one(selected_ldfs):
+    """
+    Detect development periods where LDFs drop below 1.0.
 
-profile_df = spark.createDataFrame([(p,) for p in profiles], ["profile_id"])
-# Use pandas_udf or mapInPandas to run per-profile logic in parallel
+    This is the Python version of fn_get_less_than_one_factors_index() from R.
+    """
+    # ... actual logic here ...
+    return less_than_one_info
 
-# Export combined results
-sql_writer.export_all(results, config)
+
+def compute_tail(selected_ldfs, curves, factor_one_idx):
+    """
+    Compute the tail factor by extrapolating the curve fit.
+
+    This is the Python version of fn_tail_factor_experience_method() from R.
+    """
+    # ... actual logic here ...
+    return tail_factor
 ```
 
-The key insight: start with Option A (simple loop) during development. Switch to Option B (Spark parallel) only after everything works correctly. This makes debugging much easier.
-
-### How SQL connectivity changes
-
-| Aspect | R (current) | Python on Databricks |
-|---|---|---|
-| Connection | `RODBC::odbcDriverConnect()` | Spark JDBC (`spark.read.jdbc()`) or `pyodbc` |
-| Read | `sqlQuery(conn, "SELECT ...")` | `spark.read.jdbc(url, table)` or `pd.read_sql()` |
-| Write | `sqlSave(conn, df, table)` | `df.write.jdbc(url, table)` or Delta `df.write.format("delta")` |
-| Delete+Append | `sqlQuery("DELETE..."); sqlSave(append=TRUE)` | `df.write.mode("overwrite")` |
-
-On Databricks, you can also use **Delta tables** (an improved table format) which give you versioning, time-travel, and better performance. This is optional but recommended for output tables.
-
-### How the iteration algorithm changes
-
-The R iteration algorithm uses deep recursion (can go thousands of levels deep) and global variables to track the best solution. Python has a recursion limit of 1,000 by default.
-
-**Solution:** Convert the recursion to an iterative approach using an explicit stack. This is a standard transformation:
-
-```python
-# Instead of:
-def validate_iteration(ldfs, index):   # recursive — can blow the stack
-    ...
-    validate_iteration(ldfs, index+1)  # recurse deeper
-
-# Use:
-def validate_iteration(initial_ldfs, curves):  # iterative — no stack limit
-    stack = [initial_state]                     # explicit stack
-    best_result = None
-
-    while stack and iteration_count < MAX_ITERATIONS:
-        current = stack.pop()
-        ...
-        if is_valid(current):
-            if is_better(current, best_result):
-                best_result = current
-        else:
-            for branch in get_branches(current, curves):
-                stack.append(branch)            # instead of recursing
-
-    return best_result
-```
-
-Same logic, no recursion limit issues, and easier to debug because you can inspect the stack at any point.
-
-### What each Python library is for
-
-These are the libraries you will need (all available on Databricks by default or easily installable):
-
-| Library | What it does | Used for |
-|---|---|---|
-| `pandas` | Data manipulation (tables, filtering, grouping) | Replaces R's `data.table`/`dplyr` |
-| `numpy` | Numerical operations (arrays, math) | Replaces R's built-in vectorized math |
-| `scipy` | Scientific computing | `curve_fit()` for NLS, `CubicSpline` for interpolation, `skew()` for skewness |
-| `statsmodels` | Statistical models | `medcouple_1d()` for outlier detection |
-| `openpyxl` | Excel file reading/writing | Replaces R's `openxlsx`/`readxl` |
-| `pyodbc` | SQL database connectivity | Replaces R's `RODBC` (optional if using Spark JDBC) |
-| `pyspark` | Spark interface (comes with Databricks) | Parallel processing, SQL reads/writes |
+**Key point:** Each function has a short description (the text in triple quotes, called a "docstring") saying what it does and which R function it replaces. This makes it easy to cross-reference with the R code.
 
 ---
 
-## Part 3: Task Breakdown & Timeline
+## Part 3: Key Design Decisions
+
+### The `state` dictionary (replacing R's global variables)
+
+This is the single biggest change from R to Python.
+
+**The R way:** R uses `<<-` to write to global variables. When `MBR_curve_fit.R` runs, it stores its results in global variables like `curve_fit_results`, `r_squared_values`, etc. Then `MBR_iteration_algorithm.R` reads those same globals. There are roughly 50-80 globals shared this way. The problem: you cannot tell from looking at a function what data it needs or what data it produces.
+
+**The Python way:** Each profile gets a dictionary called `state`. Each pipeline step reads what it needs from `state` and adds its results into `state`.
+
+A dictionary is just a named container. Think of it like a labeled filing cabinet:
+
+```python
+state = {}                              # Start with an empty cabinet
+state["triangle"] = ...                 # Put the triangle in the "triangle" drawer
+state["outliers"] = ...                 # Put outliers in the "outliers" drawer
+state["curves"] = ...                   # Put curve fits in the "curves" drawer
+
+# Later, any step can read from any drawer:
+my_triangle = state["triangle"]         # Pull out the triangle
+```
+
+**Why this is better:** If a function stops working, you can print `state` and see exactly what data was available at that point. In R, you would need to hunt through dozens of global variables.
+
+### The iteration algorithm (the one tricky conversion)
+
+The R iteration algorithm calls itself recursively (a function that calls itself). This can go thousands of levels deep. Python has a safety limit of 1,000 levels by default.
+
+**Solution:** Convert the recursive approach to a loop with an explicit stack. The logic stays the same — it is a mechanical transformation, not a redesign. We will handle this carefully during Phase 2.
+
+### How database access works on Databricks
+
+On Databricks, you have built-in tools to talk to databases. You do not need to install database drivers manually like in R.
+
+```
+R way:                                     Databricks way:
+─────                                      ──────────────
+1. Install ODBC driver on your machine     1. Already configured by your admin
+2. conn <- odbcDriverConnect(...)          2. Use spark.read to query
+3. data <- sqlQuery(conn, "SELECT ...")    3. data = spark.read.format("jdbc")...
+4. sqlSave(conn, results, "table_name")   4. results.write.format("jdbc")...
+```
+
+The details of connecting to your specific database will depend on how your Databricks workspace is configured. Your admin or Databricks team will have set up the connection (called a "JDBC connection" or "SQL Warehouse connection"). You just need the connection details (server name, database name, credentials).
+
+### Simple loop now, parallel later
+
+In R, the code uses `parLapply` to process 400 profiles across 10 CPU cores. We will NOT do this in Phase 1-4. Instead:
+
+- **During development (Phases 1-4):** Use a simple `for` loop. Process one profile at a time. This makes it easy to debug — if something goes wrong, you know exactly which profile and which step caused it.
+- **For production (Phase 5):** Switch to Spark's built-in parallelism to distribute profiles across the Databricks cluster. This is a small change to `main.py` once everything else works.
+
+### Saving intermediate results: two modes
+
+You will not always have access to create permanent tables in Databricks (it requires specific permissions that may take time to provision). So the project supports two modes:
+
+**Mode 1: In-Memory (use this now)**
+
+All data lives in Python variables, passed between steps within the same session. If the cluster detaches or your session expires, you re-run from the top.
+
+```python
+# Cell 1
+df_triangles = data_reader.load_profile_data(profile_id, settings)
+
+# Cell 2 (uses the variable from Cell 1 — only works in the same session)
+df_outliers = triangles.detect_outliers(df_triangles)
+
+# Cell 3
+df_vw = weighted_average.compute(df_triangles, df_outliers)
+```
+
+This is perfectly fine for development. The MBR pipeline for a single profile runs in seconds to minutes, so re-running from the top is not a big deal. The `state` dictionary in `main.py` handles this — all intermediate results are stored in `state` and flow from step to step.
+
+**Mode 2: Delta Table Checkpoints (switch to this when you have write access)**
+
+After each major pipeline step, save the result as a permanent Delta table. If anything fails or the session dies, restart from the last saved checkpoint instead of from scratch.
+
+```python
+# Cell 1 — save after loading
+df_triangles = data_reader.load_profile_data(profile_id, settings)
+spark.createDataFrame(df_triangles).write.format("delta").mode("overwrite").saveAsTable("mbr_dev.triangles")
+
+# Cell 2 — load from checkpoint (works even after cluster restart)
+df_triangles = spark.table("mbr_dev.triangles").toPandas()
+df_outliers = triangles.detect_outliers(df_triangles)
+spark.createDataFrame(df_outliers).write.format("delta").mode("overwrite").saveAsTable("mbr_dev.outliers")
+```
+
+The switch from Mode 1 to Mode 2 is small. You add a save-line after each step and a load-line at the start. The core logic does not change at all.
+
+**How this will work in `main.py`:**
+
+```python
+# A simple flag controls which mode you are in.
+# Flip this to True once you have write access.
+USE_DELTA_CHECKPOINTS = False
+
+# After each step, optionally save:
+state["triangle"] = triangles.build(state["profile_data"], settings)
+
+if USE_DELTA_CHECKPOINTS:
+    spark.createDataFrame(state["triangle"]).write.format("delta") \
+        .mode("overwrite").saveAsTable(f"mbr_dev.triangle_{profile_id}")
+
+# At the start of any step, optionally load from checkpoint:
+if USE_DELTA_CHECKPOINTS and step_to_resume_from == "outliers":
+    state["triangle"] = spark.table(f"mbr_dev.triangle_{profile_id}").toPandas()
+```
+
+**Where to find permanent Delta tables in Databricks:**
+
+When you create a Delta table (e.g., `saveAsTable("mbr_dev.triangles")`), it appears in the **Data** tab in the Databricks left sidebar:
+
+```
+Databricks left sidebar:
+│
+├── Home
+├── Workspace        ← where your .py code files live
+├── Data             ← WHERE YOUR TABLES LIVE ← ← ←
+│   └── Catalog
+│       └── your_catalog (e.g., "hive_metastore" or your company's catalog)
+│           └── your_schema (e.g., "mbr_dev")
+│               ├── triangles          ← your saved table
+│               ├── outliers           ← your saved table
+│               ├── vw_averages        ← your saved table
+│               └── ...
+├── Compute          ← where your clusters are managed
+├── Workflows        ← where scheduled jobs are set up
+```
+
+Click on **Data** in the left sidebar → expand the catalog → expand the schema → you will see all your tables listed. You can click on any table to preview its data, see its columns, check when it was last updated, etc.
+
+The table name has two parts: `schema.table_name` (e.g., `mbr_dev.triangles`). The schema is like a folder that groups related tables together. You will want to create a schema like `mbr_dev` for development tables and later `mbr_prod` for production tables. Your admin will set up the catalog and schema — you just need the name to use in your code.
+
+**Plan: start with Mode 1 now, switch to Mode 2 when access is provisioned.** The code structure supports both from day one.
+
+### Future improvement: organized sub-folders
+
+Once you are comfortable with the flat structure and the conversion is working, you can optionally reorganize into sub-folders for cleanliness:
+
+```
+mbr_slu/
+├── main.py
+├── config.py
+├── helpers.py
+│
+├── data/                      ← Group: data in/out
+│   ├── __init__.py            ← (empty file that says "this folder is a package")
+│   ├── data_reader.py
+│   ├── data_writer.py
+│   └── vena_transform.py
+│
+├── core/                      ← Group: core algorithms
+│   ├── __init__.py
+│   ├── triangles.py
+│   ├── weighted_average.py
+│   ├── curve_fit.py
+│   ├── iteration.py
+│   └── rmse.py
+│
+├── methods/                   ← Group: actuarial methods
+│   ├── __init__.py
+│   ├── actuarial_methods.py
+│   ├── method_selection.py
+│   └── ceded.py
+│
+└── factors/                   ← Group: factors and post-processing
+    ├── __init__.py
+    ├── factors.py
+    └── interpolation.py
+```
+
+The only difference is that imports change slightly:
+
+```python
+# Flat structure:
+import curve_fit
+
+# Sub-folder structure:
+from core import curve_fit
+```
+
+**This reorganization is optional and can wait until Phase 5 or later.** The flat structure works perfectly fine. Sub-folders just make it tidier when you have many files.
+
+---
+
+## Part 4: Task Breakdown & Timeline
 
 ### Overview
 
-Total estimated duration: **14–18 weeks** (assuming one person, working on this as primary project).
+Total estimated duration: **14–18 weeks** (one person, primary project).
 
-The work is divided into 5 phases. Each phase builds on the previous one. You can validate each phase independently before moving to the next.
+5 phases. Each builds on the previous one. You validate each phase before moving on.
+
+```
+Week  1–3   ████████                Phase 1: Foundation & Data Layer
+Week  4–8        ██████████████     Phase 2: Core Development Factors (hardest)
+Week  9–12              ████████    Phase 3: Actuarial Methods & Factors
+Week 13–15                  ██████  Phase 4: Integration & Validation
+Week 16–18                    ████  Phase 5: Parallel & Production
+```
+
+---
 
 ### Phase 1: Foundation & Data Layer (Weeks 1–3)
 
-Set up the project, get data flowing in and out. No actuarial logic yet — just plumbing.
+**Goal:** Get data flowing in and out. No actuarial math yet — just plumbing.
 
-| # | Task | Description | Est. Days | R File(s) |
+| # | Task | What you build | Days | R Source |
 |---|---|---|---|---|
-| 1.1 | Project setup | Create folder structure, `__init__.py` files, `requirements.txt`, Databricks repo setup | 1 day | — |
-| 1.2 | Configuration module | `config.py` — evaluation date, thresholds, DB connection strings, SML parameters | 1 day | Parts of `SLU_main_code.R.txt` |
-| 1.3 | SQL reader | Read triangles, premiums, and assumptions from Snowflake via Spark JDBC | 3 days | Parts of `SLU_main_code.R.txt` |
-| 1.4 | Vena ETL | Convert Vena Excel transforms to Python | 3 days | `MBR_vena_data_transformation_adhoc.R.txt` |
-| 1.5 | Triangle builder | Build YQ and YY triangles from raw data | 3 days | Parts of `SLU_main_code.R.txt` |
-| 1.6 | SQL writer + Excel export | Write results to SQL/Delta tables and Excel | 2 days | Parts of `SLU_main_code.R.txt` |
-| 1.7 | Tests for Phase 1 | Validate data matches R output for a few profiles | 2 days | — |
+| 1.1 | Project setup | Create `mbr_slu/` folder in Databricks with all empty `.py` files | 1 | — |
+| 1.2 | Config | `config.py` — evaluation date, thresholds, DB connection | 1 | `SLU_main_code.R` (top section) |
+| 1.3 | SQL reader | `data_reader.py` — read triangles, premiums, assumptions from database | 3 | `SLU_main_code.R` (SQL queries) |
+| 1.4 | Vena ETL | `vena_transform.py` — transform Vena Excel exports | 3 | `MBR_vena_data_transformation_adhoc.R` |
+| 1.5 | Triangle builder | `triangles.py` — build YQ and YY loss triangles from raw data | 3 | `SLU_main_code.R` (triangle section) |
+| 1.6 | Output | `data_writer.py` — write to SQL/Delta tables and Excel | 2 | `SLU_main_code.R` (export section) |
+| 1.7 | Validate | Run for 2-3 profiles, compare data against R | 2 | — |
 
-**Phase 1 milestone:** You can read data for any profile, build its triangle, and write results back. This proves the data pipeline works end-to-end.
+**Done when:** You can read data for any profile, build its triangle, and confirm the numbers match R.
+
+---
 
 ### Phase 2: Core Development Factors (Weeks 4–8)
 
-The mathematical heart of the system. This is the hardest phase.
+**Goal:** The mathematical heart — go from raw triangle to selected LDFs. This is the hardest phase.
 
-| # | Task | Description | Est. Days | R File(s) |
+| # | Task | What you build | Days | R Source |
 |---|---|---|---|---|
-| 2.1 | Outlier detection | Adjusted boxplot with medcouple | 2 days | `MBR_weighted_average.R.txt` (outlier part) |
-| 2.2 | Volume-weighted averages | Best-N VW average computation | 3 days | `MBR_weighted_average.R.txt` (VW part) |
-| 2.3 | Weighted RMSE scoring | RMSE for best-N selection and iteration scoring | 3 days | `MBR_iteration_weighted_rmse_sml.R.txt` |
-| 2.4 | Best-N selection | Wire RMSE scoring to VW averages to pick best-N | 1 day | Part of `SLU_main_code.R.txt` |
-| 2.5 | Curve fitting — Exponential Decay | First of 4 curves (simplest, good to establish pattern) | 2 days | `MBR_curve_fit.R.txt` |
-| 2.6 | Curve fitting — Weibull | Second curve | 2 days | `MBR_curve_fit.R.txt` |
-| 2.7 | Curve fitting — Power (Sherman) | Third curve | 1 day | `MBR_curve_fit.R.txt` |
-| 2.8 | Curve fitting — Inverse Power | Fourth curve (has extra `c` parameter optimization) | 2 days | `MBR_curve_fit.R.txt` |
-| 2.9 | Cook's distance + refit | Influential point detection and re-fitting for all 4 curves | 2 days | `MBR_curve_fit.R.txt` |
-| 2.10 | Iteration algorithm | Convert recursive tree-search to iterative stack-based approach | 5 days | `MBR_iteration_algorithm_0.99_modified.R.txt` |
-| 2.11 | Iteration RMSE selection | Score converged iterations, select best | 2 days | `MBR_iteration_weighted_rmse_sml.R.txt` |
-| 2.12 | Tests for Phase 2 | Compare LDFs, curves, and selected iterations against R | 3 days | — |
+| 2.1 | Outlier detection | Add `detect_outliers()` to `triangles.py` — adjusted boxplot with medcouple | 2 | `MBR_weighted_average.R` (outlier part) |
+| 2.2 | Weighted averages | `weighted_average.py` — VW LDFs for best-3, best-5, best-7, etc. | 3 | `MBR_weighted_average.R` |
+| 2.3 | RMSE scoring | `rmse.py` — weighted RMSE for scoring VW averages and iterations | 3 | `MBR_iteration_weighted_rmse_sml.R` |
+| 2.4 | Best-N selection | Add logic in `main.py` to pick the best-N using RMSE | 1 | `SLU_main_code.R` |
+| 2.5 | Curve fit: Exp Decay | `curve_fit.py` — first curve (start with the simplest one) | 2 | `MBR_curve_fit.R` |
+| 2.6 | Curve fit: Weibull | Add second curve to `curve_fit.py` | 2 | `MBR_curve_fit.R` |
+| 2.7 | Curve fit: Power | Add third curve | 1 | `MBR_curve_fit.R` |
+| 2.8 | Curve fit: Inverse Power | Add fourth curve (has extra parameter optimization) | 2 | `MBR_curve_fit.R` |
+| 2.9 | Cook's distance | Add influential-point detection and re-fitting for all 4 curves | 2 | `MBR_curve_fit.R` |
+| 2.10 | Iteration algorithm | `iteration.py` — the core tree-search (converted to loop-based) | 5 | `MBR_iteration_algorithm_0.99_modified.R` |
+| 2.11 | Iteration scoring | Add iteration RMSE selection to `rmse.py` | 2 | `MBR_iteration_weighted_rmse_sml.R` |
+| 2.12 | Validate | Compare selected LDFs against R for several profiles | 3 | — |
 
-**Phase 2 milestone:** For any profile, you can go from raw triangle → outlier-cleaned VW averages → curve fits → iterated LDF selection, and the numbers match R output.
+**Done when:** For any profile, you go from triangle → outliers → VW averages → curves → iteration → selected LDFs, and the numbers match R.
+
+---
 
 ### Phase 3: Actuarial Methods & Factors (Weeks 9–12)
 
-Apply the selected LDFs to estimate ultimate losses.
+**Goal:** Compute ultimate loss estimates and select the best method.
 
-| # | Task | Description | Est. Days | R File(s) |
+| # | Task | What you build | Days | R Source |
 |---|---|---|---|---|
-| 3.1 | Factor-one index | Find where LDFs stabilize at 1.0 | 1 day | `MBR_factor_one_index.R.txt` |
-| 3.2 | Factor-less-than-one detection | Detect anomalous sub-1.0 factors | 1 day | `MBR_factor_less_than_one_index.R.txt` |
-| 3.3 | Tail factors | Compute tail factors from curve extrapolation | 2 days | `MBR_tail_factor_methods.R.txt` |
-| 3.4 | Tail threshold RMSE | Determine where to truncate the tail | 1 day | `MBR_threshold_ultimate_weighted_RMSE.R.txt` |
-| 3.5 | DFM (Chain Ladder) | Development Factor Method ultimates | 2 days | `MBR_actuarial_method_ultimates.R.txt` |
-| 3.6 | Bornhuetter-Ferguson | BF method ultimates | 2 days | `MBR_actuarial_method_ultimates.R.txt` |
-| 3.7 | Cape Cod | CC method ultimates (includes CC change logic) | 3 days | `MBR_actuarial_method_ultimates.R.txt` |
-| 3.8 | Loss Ratio | LR method ultimates | 1 day | `MBR_actuarial_method_ultimates.R.txt` |
-| 3.9 | Method selection | Rule-based + RMSE hindsight simulation | 3 days | `MBR_method_selection_by_exposure_year_cc_change.R.txt` |
-| 3.10 | Ceded/reinsurance | Recovery ratios and ceded ultimates | 2 days | `MBR_ceded_all_calculations.R.txt` |
-| 3.11 | Interpolation | Annual-to-quarterly cubic spline | 2 days | `MBR_interpolation.R.txt` |
-| 3.12 | Tests for Phase 3 | Compare all ultimates and selections against R | 3 days | — |
+| 3.1 | Factor indexes | `factors.py` — factor-one index + factor-less-than-one detection | 2 | `MBR_factor_one_index.R` + `MBR_factor_less_than_one_index.R` |
+| 3.2 | Tail factors | Add tail factor computation to `factors.py` | 2 | `MBR_tail_factor_methods.R` |
+| 3.3 | Tail threshold RMSE | Add tail truncation logic to `rmse.py` | 1 | `MBR_threshold_ultimate_weighted_RMSE.R` |
+| 3.4 | DFM method | `actuarial_methods.py` — Development Factor Method | 2 | `MBR_actuarial_method_ultimates.R` |
+| 3.5 | BF method | Add Bornhuetter-Ferguson to `actuarial_methods.py` | 2 | `MBR_actuarial_method_ultimates.R` |
+| 3.6 | Cape Cod method | Add Cape Cod (includes CC change logic — most complex) | 3 | `MBR_actuarial_method_ultimates.R` |
+| 3.7 | LR method | Add Loss Ratio to `actuarial_methods.py` | 1 | `MBR_actuarial_method_ultimates.R` |
+| 3.8 | Method selection | `method_selection.py` — rules + RMSE hindsight simulation | 3 | `MBR_method_selection_by_exposure_year_cc_change.R` |
+| 3.9 | Ceded | `ceded.py` — reinsurance recovery ratios and ceded ultimates | 2 | `MBR_ceded_all_calculations.R` |
+| 3.10 | Interpolation | `interpolation.py` — annual-to-quarterly cubic spline | 2 | `MBR_interpolation.R` |
+| 3.11 | Validate | Compare all outputs against R | 3 | — |
 
-**Phase 3 milestone:** The full pipeline works end-to-end for a single profile. All ultimates, method selections, and ceded calculations match R.
+**Done when:** Full pipeline works for individual profiles. Ultimates, method selections, and ceded results match R.
+
+---
 
 ### Phase 4: Integration & Validation (Weeks 13–15)
 
-Wire everything together, run all profiles, validate the whole system.
+**Goal:** Run all profiles, compare everything against R, fix any differences.
 
-| # | Task | Description | Est. Days |
+| # | Task | What you build | Days |
 |---|---|---|---|
-| 4.1 | Pipeline orchestrator | Wire all modules into `pipeline.py` with the `state` dictionary flow | 3 days |
-| 4.2 | Profile loop (simple) | Run all profiles in a sequential loop, collect results | 2 days |
-| 4.3 | Full export | Output to all destinations (SQL/Delta, Excel, Vena CSV) | 2 days |
-| 4.4 | R vs Python comparison | Run both systems on the same data, compare all outputs numerically | 5 days |
-| 4.5 | Fix discrepancies | Investigate and fix any numerical differences | 3 days |
+| 4.1 | Full pipeline wiring | Wire all steps in `main.py` with the `state` dictionary flow | 3 |
+| 4.2 | All-profile loop | Run all ~400 profiles in a simple `for` loop | 2 |
+| 4.3 | Full export | Write to all output destinations (SQL, Excel, Vena CSV) | 2 |
+| 4.4 | R vs Python comparison | Run both R and Python on same data, compare all ~30 output tables | 5 |
+| 4.5 | Fix differences | Investigate and fix any numerical differences found | 3 |
 
-**Phase 4 milestone:** The Python pipeline produces results that match R across all profiles within acceptable numerical tolerance.
+**Done when:** Python pipeline produces results matching R across all profiles.
+
+---
 
 ### Phase 5: Parallelization & Production (Weeks 16–18)
 
-Make it production-ready on Databricks.
+**Goal:** Make it production-ready and scheduled on Databricks.
 
-| # | Task | Description | Est. Days |
+| # | Task | What you build | Days |
 |---|---|---|---|
-| 5.1 | Spark parallelization | Distribute profile processing across Databricks cluster | 3 days |
-| 5.2 | Error handling & logging | Add proper logging, error recovery per profile (like R's tryCatch) | 2 days |
-| 5.3 | Databricks Workflow setup | Schedule as a recurring Databricks job (replaces R's manual/cron execution) | 2 days |
-| 5.4 | Performance testing | Run full portfolio, measure timing, optimize bottlenecks | 3 days |
-| 5.5 | Documentation | Update code comments, write runbook for operations | 2 days |
-| 5.6 | Handoff & knowledge transfer | Walk through code with team, document decisions | 3 days |
+| 5.1 | Spark parallel | Distribute profiles across the Databricks cluster (replaces the `for` loop) | 3 |
+| 5.2 | Error handling | Add logging and per-profile error recovery (like R's `tryCatch`) | 2 |
+| 5.3 | Databricks Workflow | Set up a scheduled job so the pipeline runs automatically each quarter | 2 |
+| 5.4 | Performance test | Run full portfolio, measure timing, find and fix bottlenecks | 3 |
+| 5.5 | Documentation | Document the code and write a runbook for operations | 2 |
+| 5.6 | Handoff | Walk through code with team | 3 |
 
-**Phase 5 milestone:** The system runs in production on Databricks, scheduled automatically, with monitoring and logging.
+**Done when:** The system runs in production on Databricks, scheduled automatically, with logging and monitoring.
 
-### Timeline Summary
+---
 
-```
-Week  1–3   ████████░░░░░░░░░░  Phase 1: Foundation & Data Layer
-Week  4–8   ░░░░░░░████████████  Phase 2: Core Development Factors (hardest)
-Week  9–12  ░░░░░░░░░░░████████  Phase 3: Actuarial Methods & Factors
-Week 13–15  ░░░░░░░░░░░░░░░████  Phase 4: Integration & Validation
-Week 16–18  ░░░░░░░░░░░░░░░░░██  Phase 5: Parallelization & Production
-```
+### Risk areas (where things might take longer than estimated)
 
-### Risk areas (where things might take longer)
-
-| Risk | Why | Mitigation |
+| Risk | Why it is risky | What to do about it |
 |---|---|---|
-| Iteration algorithm conversion | Deep recursion → iterative stack is tricky to get right | Allocate extra time (5 days). Test extensively with known R outputs. |
-| Numerical precision differences | R and Python floating-point behavior can differ slightly | Use `np.allclose(rtol=1e-6)`. Accept small differences. Track and document them. |
-| Curve fit convergence | `scipy.curve_fit` may converge differently than R's `nls()` | Test with same starting values. May need to tune optimization parameters. |
-| Vena ETL complexity | Lots of edge cases in Excel parsing | Have sample Vena files for testing. Build incrementally. |
-| SML branching logic | Different paths for Short/Medium/Long scattered throughout | Test with one profile from each SML category from the start. |
+| Iteration algorithm (Task 2.10) | The recursion-to-loop conversion is the trickiest single piece. The R code is deeply recursive and uses global state heavily. | Give it the most time (5 days). Test against known R outputs constantly. |
+| Numerical precision | R and Python handle decimal math slightly differently. Small differences (e.g., 0.0001%) can compound across the pipeline. | Use tolerance-based comparison, not exact equality. Document acceptable differences. |
+| Curve fit convergence | Python's `scipy.curve_fit` may converge to slightly different values than R's `nls()`. | Test with the same starting values. May need to adjust optimization settings. |
+| Vena ETL | Lots of edge cases in parsing Excel files. Column names change between Vena versions. | Get sample Vena files early. Build and test incrementally. |
+| SML branching | Short/Medium/Long profiles take different code paths throughout. Easy to miss one. | Test with one profile from each SML category from day one. |
 
-### How to track progress
+---
 
-A simple tracking approach: mark each task with a status.
+### How to track and report progress
+
+Mark each task with a status as you go:
 
 | Status | Meaning |
 |---|---|
-| `NOT STARTED` | Haven't begun work |
+| `NOT STARTED` | Have not begun |
 | `IN PROGRESS` | Actively working on it |
 | `BLOCKED` | Waiting on something (note what) |
 | `IN REVIEW` | Code written, comparing against R output |
-| `DONE` | Matches R output, tests pass |
+| `DONE` | Matches R, tests pass |
 
-Update the task table above weekly. Share the phase-level summary with stakeholders:
+For weekly updates to stakeholders, use a one-liner per phase:
 
-> "Phase 2 — Core Development Factors: 7 of 12 tasks done. On track for Week 8 completion. Curve fitting is complete. Iteration algorithm is in progress — converting recursion to iterative stack."
+> **Week 6 update:**
+> - Phase 1: DONE
+> - Phase 2: 8 of 12 tasks done. Curve fitting complete. Iteration algorithm in progress.
+> - Phase 3-5: Not started.
 
 ---
 
 ## Quick Reference: R → Python Library Mapping
 
-| R | Python | Install |
-|---|---|---|
-| `data.table` / `dplyr` / `tidyr` | `pandas` | Pre-installed on Databricks |
-| `RODBC` | `pyodbc` or Spark JDBC | Spark JDBC is built-in |
-| `stats::nls()` | `scipy.optimize.curve_fit()` | Pre-installed on Databricks |
-| `robustbase::mc()` | `statsmodels.stats.statlib.medcouple_1d()` | `pip install statsmodels` |
-| `moments::skewness()` | `scipy.stats.skew()` | Pre-installed on Databricks |
-| `stats::splinefun()` | `scipy.interpolate.CubicSpline()` | Pre-installed on Databricks |
-| `ChainLadder` | Manual triangle ops with pandas | — |
-| `parallel::parLapply()` | PySpark / `concurrent.futures` | Built-in |
-| `openxlsx` / `readxl` | `openpyxl` | `pip install openpyxl` |
-| `stringr` | Python built-in `str` methods | Built-in |
-| `lubridate` | Python `datetime` / `pandas.Timestamp` | Built-in |
+| What you need | R Package | Python Package | Available on Databricks? |
+|---|---|---|---|
+| Data tables | `data.table` / `dplyr` / `tidyr` | `pandas` | Yes (pre-installed) |
+| Math operations | base R | `numpy` | Yes (pre-installed) |
+| Curve fitting | `stats::nls()` | `scipy.optimize.curve_fit()` | Yes (pre-installed) |
+| Outlier detection (medcouple) | `robustbase::mc()` | `statsmodels.stats.statlib.medcouple_1d()` | Needs `pip install statsmodels` |
+| Skewness | `moments::skewness()` | `scipy.stats.skew()` | Yes (pre-installed) |
+| Spline interpolation | `stats::splinefun()` | `scipy.interpolate.CubicSpline()` | Yes (pre-installed) |
+| Loss triangles | `ChainLadder` | Build manually with `pandas` | — |
+| Parallel processing | `parallel::parLapply()` | PySpark (built into Databricks) | Yes (built-in) |
+| Excel files | `openxlsx` / `readxl` | `openpyxl` | Needs `pip install openpyxl` |
+| String handling | `stringr` | Python built-in `str` methods | Yes (built-in) |
+| Date handling | `lubridate` | Python `datetime` / `pandas` | Yes (built-in) |
+| Database access | `RODBC` | Spark JDBC (built into Databricks) | Yes (built-in) |
