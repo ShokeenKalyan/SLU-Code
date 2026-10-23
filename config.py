@@ -130,6 +130,13 @@ def load_config():
     config["use_delta_checkpoints"] = False
     config["delta_schema"] = "mbr_dev"              # Schema for checkpoint tables
 
+    # ── SML Mapping File ────────────────────────────────────────────────
+    # Path to CSV with SML classification per profile (Short/Medium/Long).
+    # R equivalent: read.csv("SML_Mapping_File_2026_Q3.csv")
+    # UPDATE this path each quarter.
+
+    config["sml_mapping_path"] = "/mnt/mbr/SML_Mapping_File_2026_Q3.csv"
+
     # ── Output Paths ─────────────────────────────────────────────────────
     # File paths for Excel and CSV outputs.
     # R equivalent: file paths used in write.xlsx() and write.csv() calls
