@@ -376,6 +376,379 @@ def build_triangle_for_profile(actuals_data, profile_id, ri_type, sml_flag, conf
 
 
 # ---------------------------------------------------------------------------
+# Part 1B: All-Profiles Pre-Processing (R Chunks 1–4)
+# ---------------------------------------------------------------------------
+
+def prepare_all_profiles_triangles(raw_data, vena_transform_module, config):
+    """
+    Build incurred & paid triangles for ALL profiles at once, then do SML
+    classification and profile filtering. This matches R Chunks 1–4 (lines 1–584).
+
+    In R, this work happens BEFORE the per-profile run_mbr() loop:
+      1. Transform raw incurred/paid data
+      2. Inner join with profile_mapping to keep only active profiles
+      3. Build complete grid (profile × exp_year × dev_len)
+      4. Fill missing upper-triangle cells with zero
+      5. Compute cumulative (YQ) and convert to YY
+      6. Same for paid
+      7. SML classification
+      8. Filter out profiles with <5 years of non-zero data
+      9. Compute max non-zero incurred year per profile
+
+    Parameters
+    ----------
+    raw_data : dict
+        Output of data_reader.load_all_data(). Keys: 'incurred_raw', 'paid_raw',
+        'vena_data_extract_raw', 'method_raw_extract', 'profile_mapping', etc.
+    vena_transform_module : module
+        The vena_transform module (passed to avoid circular imports).
+    config : dict
+        Pipeline configuration from config.load_config().
+
+    Returns
+    -------
+    all_profiles_data : dict with keys:
+        "actuals_cum"         : pd.DataFrame — YQ cumulative incurred, all profiles
+        "actuals_yy"          : pd.DataFrame — YY cumulative incurred, all profiles
+        "actuals_cl"          : pd.DataFrame — YQ incremental incurred (with lower_tri_cmbn)
+        "paid_yq_cum"         : pd.DataFrame — YQ cumulative paid, all profiles
+        "paid_yy"             : pd.DataFrame — YY cumulative paid, all profiles
+        "exp_year_dev_len"    : pd.DataFrame — exp_year to max_dev_len mapping
+        "max_non_zero_inc_year" : dict — profile_id → latest year with non-zero incurred
+        "sml_mapping"         : pd.DataFrame — profile_id → SML_flag
+        "profile_list"        : list — profile IDs that passed all filters
+        "inputs_vena_all_profiles" : pd.DataFrame — Vena assumptions joined with profile_mapping
+        "inputs_vena_method_names" : pd.DataFrame — Vena method names joined with profile_mapping
+        "vena_ldf"            : pd.DataFrame — Vena LDF data
+        "actuals_cum_df"      : pd.DataFrame — diagnostic DF for SQL export
+        "paid_yq_cum_df"      : pd.DataFrame — diagnostic DF for SQL export
+    """
+    analysis_year = config["analysis_year"]
+    analysis_qtr = config["analysis_qtr"]
+    analysis_val_flag = config["analysis_val_flag"]
+    years_analyzed = config["years_analyzed"]
+    ri_type_run = config["ri_type_run"]
+
+    profile_mapping = raw_data["profile_mapping"]
+    id_col = "profile_id" if "profile_id" in profile_mapping.columns else "Profile_ID"
+
+    # =================================================================
+    # STEP 1: Transform incurred data and join with profile_mapping
+    # R: lines 156–167 — fn_to_transform_incurred_paid + inner_join
+    # =================================================================
+    incurred_tri_data = vena_transform_module.transform_incurred_paid(
+        raw_data["incurred_raw"],
+        res_year=analysis_year,
+        res_qtr=analysis_qtr,
+        val_flag=analysis_val_flag,
+        vector_name="Incurred Loss"
+    )
+
+    # Inner join with profile_mapping — keeps only active profiles
+    # R: actuals_all_profiles = inner_join(incurred_tri_data, profile_mapping)
+    actuals_all_profiles = incurred_tri_data.merge(
+        profile_mapping[[id_col, "res_year", "res_qtr", "val_flag"]],
+        left_on=["Product", "res_year", "res_qtr", "val_flag"],
+        right_on=[id_col, "res_year", "res_qtr", "val_flag"],
+        how="inner"
+    )
+
+    # Rename to standard column names
+    actuals_all_profiles = actuals_all_profiles.rename(columns={
+        "Product": "profile_id",
+        "Exposure Year": "exp_year",
+        "Development Period": "dev_len",
+        "Measure": "Ri_type",
+        "Value": "Gross_Incurred",
+    })
+    actuals_all_profiles = actuals_all_profiles[
+        ["profile_id", "exp_year", "dev_len", "Ri_type", "Gross_Incurred"]
+    ].copy()
+
+    # Filter to relevant years and cast types
+    actuals_all_profiles["exp_year"] = pd.to_numeric(actuals_all_profiles["exp_year"])
+    actuals_all_profiles["dev_len"] = pd.to_numeric(actuals_all_profiles["dev_len"])
+    actuals_all_profiles = actuals_all_profiles[
+        actuals_all_profiles["exp_year"] >= (analysis_year - years_analyzed + 1)
+    ].copy()
+
+    # =================================================================
+    # STEP 2: Transform Vena all-vector data
+    # R: lines 182–203 — fn_to_transform_vena_all_data + inner_join
+    # =================================================================
+    vena_all_profile_data = vena_transform_module.transform_vena_all_data(
+        raw_data["vena_data_extract_raw"],
+        res_year=analysis_year,
+        analysis_qtr=analysis_qtr,
+        analysis_val_flag=analysis_val_flag,
+        years_analyzed=years_analyzed
+    )
+
+    inputs_vena_all_profiles = pd.DataFrame(vena_all_profile_data[0]) if isinstance(vena_all_profile_data, (list, tuple)) else vena_all_profile_data.get("inputs", pd.DataFrame())
+    vena_ldf = vena_all_profile_data[1] if isinstance(vena_all_profile_data, (list, tuple)) else vena_all_profile_data.get("ldf", pd.DataFrame())
+
+    # Compute Financial Budget LR (Att)
+    if "Budget EP FY" in inputs_vena_all_profiles.columns and "Financial Budget Loss" in inputs_vena_all_profiles.columns:
+        inputs_vena_all_profiles["Financial Budget LR (Att)"] = np.where(
+            inputs_vena_all_profiles["Budget EP FY"] == 0, 0,
+            inputs_vena_all_profiles["Financial Budget Loss"] / inputs_vena_all_profiles["Budget EP FY"]
+        )
+        inputs_vena_all_profiles = inputs_vena_all_profiles.drop(
+            columns=["Financial Budget Loss", "Budget EP FY"], errors="ignore"
+        )
+
+    # Inner join with profile_mapping
+    if "Product" in inputs_vena_all_profiles.columns:
+        pre_join_cols = list(inputs_vena_all_profiles.columns)
+        inputs_vena_all_profiles = inputs_vena_all_profiles.merge(
+            profile_mapping[[id_col, "res_year", "res_qtr", "val_flag"]],
+            left_on=["Product", "res_year", "res_qtr", "val_flag"],
+            right_on=[id_col, "res_year", "res_qtr", "val_flag"],
+            how="inner"
+        )
+        inputs_vena_all_profiles = inputs_vena_all_profiles[
+            [c for c in pre_join_cols if c in inputs_vena_all_profiles.columns]
+        ].copy()
+        if "Exposure Year" in inputs_vena_all_profiles.columns:
+            inputs_vena_all_profiles["Exposure Year"] = pd.to_numeric(
+                inputs_vena_all_profiles["Exposure Year"], errors="coerce"
+            )
+        if "Development Period" in inputs_vena_all_profiles.columns:
+            inputs_vena_all_profiles["Development Period"] = pd.to_numeric(
+                inputs_vena_all_profiles["Development Period"], errors="coerce"
+            )
+
+    # =================================================================
+    # STEP 3: Transform Vena method name data
+    # R: lines 222–228 — fn_to_transform_method_data + inner_join
+    # =================================================================
+    vena_method_data = vena_transform_module.transform_method_data(
+        raw_data["method_raw_extract"],
+        res_year=analysis_year,
+        res_qtr=analysis_qtr,
+        val_flag=analysis_val_flag,
+        Ri_type_run=ri_type_run
+    )
+
+    inputs_vena_method_names = pd.DataFrame()
+    if isinstance(vena_method_data, pd.DataFrame) and "Product" in vena_method_data.columns:
+        pre_join_cols = list(vena_method_data.columns)
+        inputs_vena_method_names = vena_method_data.merge(
+            profile_mapping[[id_col, "res_year", "res_qtr", "val_flag"]],
+            left_on=["Product", "res_year", "res_qtr", "val_flag"],
+            right_on=[id_col, "res_year", "res_qtr", "val_flag"],
+            how="inner"
+        )
+        inputs_vena_method_names = inputs_vena_method_names[
+            [c for c in pre_join_cols if c in inputs_vena_method_names.columns]
+        ].copy()
+        if "Exposure Year" in inputs_vena_method_names.columns:
+            inputs_vena_method_names["Exposure Year"] = pd.to_numeric(
+                inputs_vena_method_names["Exposure Year"], errors="coerce"
+            )
+        if "Development Period" in inputs_vena_method_names.columns:
+            inputs_vena_method_names["Development Period"] = pd.to_numeric(
+                inputs_vena_method_names["Development Period"], errors="coerce"
+            )
+
+    # =================================================================
+    # STEP 4: Build all-profiles incurred triangle (grid + fill + cumulative + YY)
+    # R: lines 343–426
+    # =================================================================
+    profile_ids = sorted(actuals_all_profiles["profile_id"].unique().tolist())
+    ri_types = actuals_all_profiles["Ri_type"].unique().tolist()
+
+    all_cmbn, exp_year_dev_len = build_all_combinations(
+        profile_ids, analysis_year, analysis_qtr, years_analyzed, ri_types
+    )
+
+    actuals_cl = fill_missing_upper_triangle(actuals_all_profiles, all_cmbn)
+    actuals_cum = create_cumulative(actuals_cl)
+
+    # Diagnostic DF for SQL export (R: actuals_cum_df, line 406)
+    actuals_cum_df = actuals_cum.copy()
+    actuals_cum_df["res_year"] = analysis_year
+    actuals_cum_df["res_qtr"] = analysis_qtr
+    actuals_cum_df["val_flag"] = analysis_val_flag
+
+    # YY conversion for long-tailed profiles (R: lines 411-426)
+    actuals_yy = convert_yq_to_yy(actuals_cl, analysis_qtr)
+
+    # =================================================================
+    # STEP 5: Build all-profiles paid triangle (same process)
+    # R: lines 296–461
+    # =================================================================
+    paid_tri_data = vena_transform_module.transform_incurred_paid(
+        raw_data["paid_raw"],
+        res_year=analysis_year,
+        res_qtr=analysis_qtr,
+        val_flag=analysis_val_flag,
+        vector_name="Paid Loss"
+    )
+
+    paid_all_profiles = paid_tri_data.merge(
+        profile_mapping[[id_col, "res_year", "res_qtr", "val_flag"]],
+        left_on=["Product", "res_year", "res_qtr", "val_flag"],
+        right_on=[id_col, "res_year", "res_qtr", "val_flag"],
+        how="inner"
+    )
+    paid_all_profiles = paid_all_profiles.rename(columns={
+        "Product": "profile_id",
+        "Exposure Year": "exp_year",
+        "Development Period": "dev_len",
+        "Measure": "Ri_type",
+        "Value": "Gross_Paid",
+    })
+    paid_all_profiles = paid_all_profiles[
+        ["profile_id", "exp_year", "dev_len", "Ri_type", "Gross_Paid"]
+    ].copy()
+    paid_all_profiles["exp_year"] = pd.to_numeric(paid_all_profiles["exp_year"])
+    paid_all_profiles["dev_len"] = pd.to_numeric(paid_all_profiles["dev_len"])
+
+    # Use incurred grid to fill missing paid combos (R: lines 432-436)
+    paid_grid = actuals_cl[["profile_id", "exp_year", "dev_len", "Ri_type", "lower_tri_cmbn"]].copy()
+    paid_yq = paid_grid.merge(paid_all_profiles, on=["profile_id", "exp_year", "dev_len", "Ri_type"], how="left")
+    paid_yq["Gross_Paid"] = paid_yq["Gross_Paid"].fillna(0.0)
+
+    # Cumulative paid (R: lines 438-444)
+    paid_yq = paid_yq.sort_values(["profile_id", "exp_year", "Ri_type", "dev_len"])
+    paid_yq_cum = paid_yq.copy()
+    paid_yq_cum["Cumulative_Gross_Paid"] = (
+        paid_yq_cum.groupby(["profile_id", "exp_year", "Ri_type"])["Gross_Paid"].cumsum()
+    )
+
+    # Diagnostic DF for SQL export (R: paid_yq_cum_df, line 443)
+    paid_yq_cum_df = paid_yq_cum.copy()
+    paid_yq_cum_df["res_year"] = analysis_year
+    paid_yq_cum_df["res_qtr"] = analysis_qtr
+    paid_yq_cum_df["val_flag"] = analysis_val_flag
+
+    # YY paid (R: lines 447-460)
+    paid_yy = paid_yq.copy()
+    if analysis_qtr == 1:
+        paid_yy["dev_len"] = (
+            analysis_qtr * 3
+            + np.ceil((paid_yy["dev_len"] - 3) / 12).astype(int) * 12
+        )
+    else:
+        paid_yy["dev_len"] = (
+            analysis_qtr * 3
+            + (paid_yy["dev_len"] // 12).astype(int) * 12
+        )
+    paid_yy = (
+        paid_yy
+        .groupby(["profile_id", "exp_year", "dev_len", "Ri_type", "lower_tri_cmbn"], as_index=False)["Gross_Paid"]
+        .sum()
+    )
+    paid_yy = paid_yy.sort_values(["profile_id", "exp_year", "Ri_type", "dev_len"])
+    paid_yy["Cumulative_Gross_Paid"] = (
+        paid_yy.groupby(["profile_id", "exp_year", "Ri_type", "lower_tri_cmbn"])["Gross_Paid"].cumsum()
+    )
+
+    # =================================================================
+    # STEP 6: SML classification (R Chunk 2, lines 467-531)
+    # =================================================================
+    from data_reader import load_sml_mapping
+    sml_mapping = load_sml_mapping(config)
+
+    # =================================================================
+    # STEP 7: Profile filtering — remove profiles with <5 non-zero years
+    # R Chunk 3, lines 535-548
+    # =================================================================
+    eligible_profiles = filter_profiles_by_data(
+        actuals_cl, sml_mapping, config
+    )
+
+    # =================================================================
+    # STEP 8: Max non-zero incurred year per profile (R Chunk 4, lines 551-576)
+    # =================================================================
+    max_non_zero = compute_max_non_zero_inc_year(actuals_all_profiles, analysis_year)
+
+    # Final profile list = profiles that passed filtering AND are in profile_mapping
+    profile_list = [p for p in eligible_profiles if p in profile_ids]
+
+    return {
+        "actuals_cum": actuals_cum,
+        "actuals_yy": actuals_yy,
+        "actuals_cl": actuals_cl,
+        "paid_yq_cum": paid_yq_cum,
+        "paid_yy": paid_yy,
+        "exp_year_dev_len": exp_year_dev_len,
+        "max_non_zero_inc_year": max_non_zero,
+        "sml_mapping": sml_mapping,
+        "profile_list": profile_list,
+        "inputs_vena_all_profiles": inputs_vena_all_profiles,
+        "inputs_vena_method_names": inputs_vena_method_names,
+        "vena_ldf": vena_ldf,
+        "actuals_cum_df": actuals_cum_df,
+        "paid_yq_cum_df": paid_yq_cum_df,
+    }
+
+
+def filter_profiles_by_data(actuals_cl, sml_mapping, config):
+    """
+    Remove profiles with fewer than 5 years of non-zero incurred data.
+    Only considers years within each profile's SML lookback window.
+
+    R equivalent: Chunk 3 (lines 535–548) of SLU_main_code.R.
+
+    Parameters
+    ----------
+    actuals_cl : pd.DataFrame
+        Incremental incurred data (all profiles).
+    sml_mapping : pd.DataFrame
+        Must have columns [profile_id, SML_flag].
+    config : dict
+
+    Returns
+    -------
+    list : Profile IDs that passed the filter (>= 5 non-zero years).
+    """
+    analysis_year = config["analysis_year"]
+    years_S = config["years_analyzed_S"]
+    years_M = config["years_analyzed_M"]
+
+    # Sum incurred by (profile, exp_year, Ri_type)
+    by_ey = (
+        actuals_cl
+        .groupby(["profile_id", "exp_year", "Ri_type"], as_index=False)["Gross_Incurred"]
+        .sum()
+    )
+
+    # Join SML flag
+    if "profile_id" in sml_mapping.columns and "SML_flag" in sml_mapping.columns:
+        by_ey = by_ey.merge(
+            sml_mapping[["profile_id", "SML_flag"]], on="profile_id", how="left"
+        )
+    else:
+        by_ey["SML_flag"] = "M"
+
+    by_ey["SML_flag"] = by_ey["SML_flag"].fillna("M")
+
+    # Filter to each SML's lookback window
+    # R: SML_flag=='S' & exp_year >= (analysis_year - years_analyzed_S + 1)
+    #  | SML_flag=='M' & exp_year >= (analysis_year - years_analyzed_M + 1)
+    mask_s = (by_ey["SML_flag"] == "S") & (by_ey["exp_year"] >= analysis_year - years_S + 1)
+    mask_m = (by_ey["SML_flag"] == "M") & (by_ey["exp_year"] >= analysis_year - years_M + 1)
+    mask_l = (by_ey["SML_flag"] == "L")
+    filtered = by_ey[mask_s | mask_m | mask_l].copy()
+
+    # Keep only non-zero years
+    filtered = filtered[filtered["Gross_Incurred"] != 0]
+
+    # Count non-zero years per profile
+    year_counts = (
+        filtered
+        .groupby(["profile_id", "SML_flag", "Ri_type"], as_index=False)
+        .agg(year_count=("exp_year", "count"))
+    )
+
+    # Keep profiles with >= 5 non-zero years
+    eligible = year_counts[year_counts["year_count"] >= 5]
+    return sorted(eligible["profile_id"].unique().tolist())
+
+
+# ---------------------------------------------------------------------------
 # Part 2: Outlier Detection
 # ---------------------------------------------------------------------------
 
