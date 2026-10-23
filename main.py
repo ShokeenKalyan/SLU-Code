@@ -47,10 +47,42 @@ import helpers
 
 
 # =============================================================================
-# SECTION 1: PIPELINE FOR A SINGLE PROFILE
+# SECTION 1: ALL-PROFILES PRE-PROCESSING (R Chunks 1–4)
 # =============================================================================
 
-def run_profile(profile_id, raw_data, vena_data, settings):
+def prepare_all_profiles(raw_data, settings):
+    """
+    Pre-process data for ALL profiles before the per-profile loop.
+
+    R equivalent: Chunks 1–4 of SLU_main_code.R (lines 1–584).
+    In R, this runs once and creates shared DataFrames (actuals_cum, actuals_yy,
+    paid_yq_cum, etc.) that every profile's run_mbr() then filters from.
+
+    This step:
+      1. Transforms raw SQL data (incurred, paid, Vena vectors)
+      2. Joins with profile_mapping to keep only active profiles
+      3. Builds the all-profiles triangles (grid, fill, cumulative, YY)
+      4. Classifies profiles as Short/Medium/Long-tailed (SML)
+      5. Filters out profiles with <5 years of non-zero data
+      6. Computes max non-zero incurred year per profile
+
+    Args:
+        raw_data (dict): Output of data_reader.load_all_data()
+        settings (dict): Configuration from config.load_config()
+
+    Returns:
+        dict: All pre-processed data needed by run_profile()
+    """
+    return triangles.prepare_all_profiles_triangles(
+        raw_data, vena_transform, settings
+    )
+
+
+# =============================================================================
+# SECTION 2: PIPELINE FOR A SINGLE PROFILE
+# =============================================================================
+
+def run_profile(profile_id, all_profiles_data, vena_data, settings):
     """
     Run the full MBR pipeline for one insurance profile.
 
@@ -62,7 +94,9 @@ def run_profile(profile_id, raw_data, vena_data, settings):
 
     Args:
         profile_id (str): The profile identifier (e.g., "CompanyA_GL_Occ_Inc")
-        raw_data (dict): All raw data loaded from SQL (shared across profiles)
+        all_profiles_data (dict): Pre-built data from prepare_all_profiles()
+            Contains actuals_cum, actuals_yy, actuals_cl, exp_year_dev_len,
+            max_non_zero_inc_year, sml_mapping — shared across all profiles.
         vena_data (dict): Transformed Vena override data (shared across profiles)
         settings (dict): Configuration from config.load_config()
 
@@ -80,21 +114,18 @@ def run_profile(profile_id, raw_data, vena_data, settings):
     }
 
     try:
-        # ── Step 1: Get this profile's data ──────────────────────────────
-        # R equivalent: Lines 603-650 of SLU_main_code.R
-        # Filters the shared raw_data to just this profile's rows.
+        # ── Step 1: Get this profile's SML and settings ──────────────────
+        # R equivalent: Lines 588-648 of SLU_main_code.R
+        # Looks up the SML flag and max_non_zero_inc_year from the
+        # pre-computed all-profiles data (instead of recomputing).
 
-        state["profile_data"] = data_reader.get_profile_data(
-            profile_id, raw_data, settings
-        )
+        sml_mapping = all_profiles_data["sml_mapping"]
+        sml_row = sml_mapping[sml_mapping["profile_id"] == profile_id]
+        state["sml_flag"] = sml_row["SML_flag"].values[0] if len(sml_row) > 0 else "M"
 
         state["overrides"] = vena_transform.get_profile_overrides(
             profile_id, vena_data
         )
-
-        # Determine SML classification for this profile
-        # (Short/Medium/Long-tailed — controls many downstream decisions)
-        state["sml_flag"] = state["profile_data"].get("sml_flag", "M")
 
         # Get SML-specific settings (lookback years, VW period candidates, etc.)
         state["years_analyzed"] = config.get_years_analyzed_for_sml(
@@ -109,20 +140,22 @@ def run_profile(profile_id, raw_data, vena_data, settings):
 
 
         # ── Step 2: Build loss development triangle ──────────────────────
-        # R equivalent: Lines 651-720 of SLU_main_code.R
-        # Builds the cumulative incurred triangle (YQ for S/M, YY for L).
+        # R equivalent: Lines 603-720 of SLU_main_code.R
+        # Filters the pre-built all-profiles triangle to just this profile.
+        # In R: actuals_cum = filter(actuals_cum, profile_id == profile_id_analyzed)
 
         state["triangle"] = triangles.build_triangle_for_profile(
-            state["profile_data"], settings
+            all_profiles_data, profile_id, "Gross", state["sml_flag"], settings
         )
 
         # Compute age-to-age factors from the cumulative triangle
         state["age_to_age"] = triangles.compute_age_to_age_factors(
-            state["triangle"]["cumulative"]
+            state["triangle"]["actuals_cum_profile"],
+            state["triangle"]["exp_year_dev_len"]
         )
 
         print(f"  [{profile_id}] Triangle built: "
-              f"{state['triangle']['cumulative'].shape}")
+              f"{state['triangle']['triangle_cum'].shape}")
 
 
         # ── Step 3: Detect outliers ──────────────────────────────────────
@@ -130,7 +163,10 @@ def run_profile(profile_id, raw_data, vena_data, settings):
         # Uses adjusted boxplot with medcouple to flag extreme LDFs.
 
         state["outliers"] = triangles.detect_outliers(
-            state["age_to_age"], settings
+            state["triangle"]["actuals_cum_profile"],
+            state["triangle"]["exp_year_dev_len"],
+            state["sml_flag"],
+            settings
         )
 
 
@@ -408,19 +444,44 @@ def run_pipeline():
 
 
     # ── Step 1: Load configuration ───────────────────────────────────────
-    print("\n[1/6] Loading configuration...")
+    print("\n[1/7] Loading configuration...")
     settings = config.load_config()
     print(f"  Evaluation: {settings['analysis_year']}Q{settings['analysis_qtr']}")
 
 
     # ── Step 2: Load data from SQL ───────────────────────────────────────
-    print("\n[2/6] Loading data from SQL...")
+    print("\n[2/7] Loading data from SQL...")
     raw_data = data_reader.load_all_data(settings)
     print(f"  Loaded {len(raw_data)} data tables")
 
 
-    # ── Step 3: Transform Vena overrides ─────────────────────────────────
-    print("\n[3/6] Processing Vena overrides...")
+    # ── Step 3: Pre-process ALL profiles (R Chunks 1–4) ──────────────────
+    # This matches R's approach: build triangles, SML, and filtering for ALL
+    # profiles once, then each profile just filters from the shared data.
+    print("\n[3/7] Pre-processing all profiles (triangles, SML, filtering)...")
+    all_profiles_data = prepare_all_profiles(raw_data, settings)
+    profile_list = all_profiles_data["profile_list"]
+    print(f"  All-profiles triangles built")
+    print(f"  {len(profile_list)} profiles passed data-sufficiency filter (>=5 non-zero years)")
+
+
+    # ── Step 4: Write all-profiles diagnostic tables to SQL ──────────────
+    # R writes these shared DataFrames BEFORE the per-profile loop.
+    # They contain the complete triangle for ALL profiles in one table.
+    print("\n[4/7] Writing all-profiles diagnostic tables...")
+    try:
+        data_writer.write_to_sql(
+            {"actuals_cum_df": all_profiles_data["actuals_cum_df"],
+             "paid_yq_cum_df": all_profiles_data["paid_yq_cum_df"]},
+            settings
+        )
+        print(f"  All-profiles diagnostic tables written")
+    except Exception as e:
+        print(f"  WARNING: Diagnostic table write failed ({e}). Continuing.")
+
+
+    # ── Step 5: Transform Vena overrides ─────────────────────────────────
+    print("\n[5/7] Processing Vena overrides...")
     try:
         vena_data = vena_transform.process_vena_data(settings)
         print(f"  Vena data processed successfully")
@@ -429,19 +490,13 @@ def run_pipeline():
         vena_data = {}
 
 
-    # ── Step 4: Get profile list ─────────────────────────────────────────
-    print("\n[4/6] Building profile list...")
-    profile_list = data_reader.get_profile_list(raw_data)
-    print(f"  {len(profile_list)} profiles to process")
-
-
-    # ── Step 5: Process each profile ─────────────────────────────────────
+    # ── Step 6: Process each profile ─────────────────────────────────────
     # Using a simple for-loop for now (Mode 1: In-Memory).
     # For production, this can be replaced with Spark parallel execution.
     #
     # R equivalent: parLapply(clust, profiles_list, final_run_MBR)
 
-    print(f"\n[5/6] Processing profiles...")
+    print(f"\n[6/7] Processing profiles...")
     all_results = []
     success_count = 0
     fail_count = 0
@@ -449,7 +504,7 @@ def run_pipeline():
     for i, profile_id in enumerate(profile_list):
         print(f"\n--- Profile {i+1}/{len(profile_list)}: {profile_id} ---")
 
-        result = run_profile(profile_id, raw_data, vena_data, settings)
+        result = run_profile(profile_id, all_profiles_data, vena_data, settings)
 
         if result and result.get("success"):
             success_count += 1
@@ -463,8 +518,8 @@ def run_pipeline():
             data_writer.save_checkpoint(result, profile_id, settings)
 
 
-    # ── Step 6: Combine and export results ─────────────────────────────
-    print(f"\n[6/6] Exporting results...")
+    # ── Step 7: Combine and export results ─────────────────────────────
+    print(f"\n[7/7] Exporting results...")
 
     # Filter to successful results only
     successful_results = [r for r in all_results if r and r.get("success")]
@@ -540,12 +595,16 @@ def run_single_profile(profile_id, settings=None):
     print(f"Loading data for single profile: {profile_id}")
     raw_data = data_reader.load_all_data(settings)
 
+    # Run the all-profiles pre-processing (same as full pipeline)
+    print("Pre-processing all profiles...")
+    all_profiles_data = prepare_all_profiles(raw_data, settings)
+
     try:
         vena_data = vena_transform.process_vena_data(settings)
     except Exception:
         vena_data = {}
 
-    result = run_profile(profile_id, raw_data, vena_data, settings)
+    result = run_profile(profile_id, all_profiles_data, vena_data, settings)
     return result
 
 
