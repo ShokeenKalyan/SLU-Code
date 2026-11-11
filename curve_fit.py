@@ -28,12 +28,30 @@ import pandas as pd
 
 def _compute_rmse(actual, predicted):
     """
-    Root Mean Squared Error between two arrays.
+    Root Mean Squared Error between two equal-length arrays.
     R equivalent: Metrics::rmse()
     """
     actual = np.asarray(actual, dtype=float)
     predicted = np.asarray(predicted, dtype=float)
     return np.sqrt(np.mean((actual - predicted) ** 2))
+
+
+def _compute_rmse_r_style(actual_short, predicted_long):
+    """
+    RMSE matching R's recycling behavior when vectors have different lengths.
+
+    In R's leave-one-out loop: rmse(df_1$y, y_2_cap) where df_1$y has n-1
+    elements and y_2_cap has n elements. R recycles df_1$y to length n
+    (the first element wraps around to fill the gap). We replicate that here.
+    """
+    a = np.asarray(actual_short, dtype=float)
+    p = np.asarray(predicted_long, dtype=float)
+    if len(a) == len(p):
+        return np.sqrt(np.mean((a - p) ** 2))
+    # Tile/repeat 'a' to match length of 'p' (R's recycling)
+    n_long = len(p)
+    a_recycled = np.resize(a, n_long)
+    return np.sqrt(np.mean((a_recycled - p) ** 2))
 
 
 def _build_dev_periods(sml_flag, years_analyzed, analysis_qtr):
@@ -137,12 +155,13 @@ def _leave_one_out_diagnostics(x_vals, y_vals, x_trans_func, y_trans_func,
 
         a, b, _, _, rsq = _ols_fit(xt, yt)
 
-        # Predicted values on the FULL set (for RMSE and Cook's D)
+        # Predicted values on the FULL set (all n points, including the removed one)
         y_pred_full = predict_func(a, b, x_vals)
 
-        # RMSE: computed between the LOO actual values and full-set predictions
-        # (The R code passes df_1$y and y_2_cap which is predicted on all m_1 points)
-        rmse_val = _compute_rmse(y_loo, predict_func(a, b, x_loo))
+        # RMSE: R computes rmse(df_1$y, y_2_cap) where df_1$y has n-1 values
+        # and y_2_cap has n values (predicted on ALL m_1 points). R silently
+        # recycles the shorter vector. We replicate that behavior here.
+        rmse_val = _compute_rmse_r_style(y_loo, y_pred_full)
 
         # Cook's distance: sum of squared differences between full-fit and LOO-fit
         # predictions, divided by 2 * RMSE²
@@ -584,7 +603,8 @@ def fit_inverse_power(y_input, sml_flag, years_analyzed, analysis_qtr):
         rsq = 1.0 - (ss_res / ss_total if ss_total != 0 else 1.0)
 
         y_pred_full = 1 + np.exp(a + b * np.log(x_gt1 + c_final))
-        rmse_val = _compute_rmse(y_loo, 1 + np.exp(a + b * np.log(x_loo + c_final)))
+        # Match R's recycling: rmse(df_1$y, y_2_cap) where lengths differ (n-1 vs n)
+        rmse_val = _compute_rmse_r_style(y_loo, y_pred_full)
 
         if rmse_val > 0:
             cook_d = np.sum((ycap_full - y_pred_full) ** 2) / (2 * rmse_val ** 2)
@@ -640,65 +660,140 @@ def fit_inverse_power(y_input, sml_flag, years_analyzed, analysis_qtr):
 #  Public: Fit all four curves and rank by R²
 # ---------------------------------------------------------------------------
 
-def fit_all_curves(y_input, sml_flag, years_analyzed, analysis_qtr):
+def fit_all_curves(y_input, sml_flag, years_analyzed, analysis_qtr,
+                    analysis_year=None, analysis_val_flag=None, profile_id=None):
     """
-    Fit all four parametric distributions and return results ranked by R².
+    Fit all four parametric distributions and return 3 flat DataFrames
+    matching the R output structure.
 
-    This is the main entry point called by the pipeline. It tries each
-    curve, catches failures gracefully, and returns the results sorted
-    from best to worst R².
+    R equivalent: Lines 844-890 of SLU_main_code.R.txt
 
     Parameters
     ----------
-    y_input        : array-like — LDF values (one per dev period)
-    sml_flag       : str — 'S', 'M', or 'L'
-    years_analyzed : int — number of exposure years
-    analysis_qtr   : int — quarter being analyzed (1-4)
+    y_input          : array-like — LDF values (one per dev period)
+    sml_flag         : str — 'S', 'M', or 'L'
+    years_analyzed   : int — number of exposure years
+    analysis_qtr     : int — quarter being analyzed (1-4)
+    analysis_year    : int — analysis year (for identifier columns)
+    analysis_val_flag: int — valuation flag (for identifier columns)
+    profile_id       : str — profile ID (for identifier columns)
 
     Returns
     -------
-    dict with keys:
-        'ranked_results' : list of dicts, each with keys:
-            'name'       : str — curve name
-            'fitted_df'  : pd.DataFrame
-            'r_squared'  : float
-            'diagnostics': pd.DataFrame
-        'best_curve'     : str — name of the curve with highest R²
-        'all_r_squared'  : dict — {curve_name: r_squared} for quick lookup
+    dict with 3 flat DataFrames:
+        'curve_values'       : pd.DataFrame — R's "data" (line 851)
+            One row per dev period. Columns: dev_qtr, dev_len,
+            Initial_Selection, Exponential_Decay, Inverse_Power, Power, Weibull
+        'r_squared'          : pd.DataFrame — R's "r_sq_data" (line 868)
+            One row per curve, sorted by R² descending. Columns: Distribution, R_Squared
+        'influential_points' : pd.DataFrame — R's "influential_points_data" (line 871)
+            One row per dev period. Columns: dev_len, Initial_Selection,
+            influential_point_exp_fit, influential_point_weibull_fit,
+            influential_point_power_fit, influential_point_ipc_fit
     """
-    # Each curve: (name, fit function)
+    # Each curve: (name, fit function, influential_points column name)
     curves = [
-        ("Exponential_Decay", fit_exponential_decay),
-        ("Weibull", fit_weibull),
-        ("Power", fit_power),
-        ("Inverse_Power", fit_inverse_power),
+        ("Exponential_Decay", fit_exponential_decay, "influential_point_exp_fit"),
+        ("Weibull",           fit_weibull,            "influential_point_weibull_fit"),
+        ("Power",             fit_power,              "influential_point_power_fit"),
+        ("Inverse_Power",     fit_inverse_power,      "influential_point_ipc_fit"),
     ]
 
-    results = []
-    for name, fit_func in curves:
+    # Fit each curve independently
+    fit_results = {}
+    for name, fit_func, _ in curves:
         try:
-            result = fit_func(y_input, sml_flag, years_analyzed, analysis_qtr)
-            result["name"] = name
-            results.append(result)
+            fit_results[name] = fit_func(y_input, sml_flag, years_analyzed, analysis_qtr)
         except Exception:
-            # If a curve fails (e.g., invalid log domain), skip it
-            # and record it with R² = 0 so it ranks last
-            results.append({
-                "name": name,
+            fit_results[name] = {
                 "fitted_df": pd.DataFrame(),
                 "r_squared": 0.0,
                 "diagnostics": pd.DataFrame(),
-            })
+            }
 
-    # Sort by R² descending (best fit first)
-    results.sort(key=lambda r: r["r_squared"], reverse=True)
+    # ── Build flat DataFrame 1: curve_values (R's "data", line 851) ─────
+    # Use Exponential as the base (all curves share the same x and y)
+    base = fit_results["Exponential_Decay"]["fitted_df"]
+    if base.empty:
+        # Fallback: try any non-empty curve
+        for name, _, _ in curves:
+            if not fit_results[name]["fitted_df"].empty:
+                base = fit_results[name]["fitted_df"]
+                break
 
-    # Build quick-lookup dict
-    all_rsq = {r["name"]: r["r_squared"] for r in results}
-    best_name = results[0]["name"] if results else None
+    if not base.empty:
+        curve_values = pd.DataFrame()
+        curve_values["dev_qtr"] = base["x"] / 3
+        curve_values["dev_len"] = base["x"]
+        curve_values["Initial_Selection"] = base["y"]
+        # Add each curve's fitted values as a column
+        for name, _, _ in curves:
+            if not fit_results[name]["fitted_df"].empty:
+                curve_values[name] = fit_results[name]["fitted_df"]["ycap"].values
+            else:
+                curve_values[name] = 1.0
+        # Replace NaN with 1 (R lines 858-863)
+        for name, _, _ in curves:
+            curve_values[name] = curve_values[name].fillna(1.0)
+    else:
+        curve_values = pd.DataFrame()
+
+    # Add identifier columns if provided
+    if analysis_year is not None and not curve_values.empty:
+        curve_values.insert(0, "res_year", analysis_year)
+        curve_values.insert(1, "res_qtr", analysis_qtr)
+        curve_values.insert(2, "val_flag", analysis_val_flag)
+        curve_values.insert(3, "profile_id", profile_id)
+
+    # ── Build flat DataFrame 2: r_squared (R's "r_sq_data", line 868) ───
+    rsq_rows = []
+    for name, _, _ in curves:
+        rsq_rows.append({
+            "Distribution": name,
+            "R_Squared": fit_results[name]["r_squared"],
+        })
+    r_squared = pd.DataFrame(rsq_rows)
+    # Sort by R² descending (R line 905)
+    r_squared = r_squared.sort_values("R_Squared", ascending=False).reset_index(drop=True)
+
+    # Add identifier columns if provided
+    if analysis_year is not None:
+        r_squared.insert(0, "res_year", analysis_year)
+        r_squared.insert(1, "res_qtr", analysis_qtr)
+        r_squared.insert(2, "val_flag", analysis_val_flag)
+        r_squared.insert(3, "profile_id", profile_id)
+
+    # ── Build flat DataFrame 3: influential_points (R lines 871-890) ────
+    # Start from curve_values base (dev_len + Initial_Selection)
+    if not curve_values.empty:
+        influential_points = curve_values[["dev_len", "Initial_Selection"]].copy()
+        if analysis_year is not None:
+            influential_points.insert(0, "res_year", analysis_year)
+            influential_points.insert(1, "res_qtr", analysis_qtr)
+            influential_points.insert(2, "val_flag", analysis_val_flag)
+            influential_points.insert(3, "profile_id", profile_id)
+
+        # Left join each curve's diagnostics to_remove column
+        for name, _, col_name in curves:
+            diag = fit_results[name].get("diagnostics", pd.DataFrame())
+            if not diag.empty and "to_remove" in diag.columns:
+                diag_slim = diag[["x", "to_remove"]].rename(
+                    columns={"x": "dev_len", "to_remove": col_name}
+                )
+                influential_points = influential_points.merge(
+                    diag_slim, on="dev_len", how="left"
+                )
+            else:
+                influential_points[col_name] = pd.NA
+            # Fill NAs with "Not used in curve fit" (R line 886-889)
+            influential_points[col_name] = influential_points[col_name].fillna(
+                "Not used in curve fit"
+            )
+    else:
+        influential_points = pd.DataFrame()
 
     return {
-        "ranked_results": results,
-        "best_curve": best_name,
-        "all_r_squared": all_rsq,
+        "curve_values": curve_values,
+        "r_squared": r_squared,
+        "influential_points": influential_points,
     }
