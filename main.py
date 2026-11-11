@@ -201,16 +201,23 @@ def run_profile(profile_id, all_profiles_data, vena_data, settings):
 
         # ── Step 6: Fit parametric curves ────────────────────────────────
         # R equivalent: exponentialfunc(), weibullfunc(), powerfunc(), IPCfunc()
-        # Fits 4 mathematical curves to the LDF pattern, ranked by R².
+        # R equivalent combined tables: lines 851, 868, 871-890 of SLU_main_code.R
+        # Returns 3 flat DataFrames: curve_values, r_squared, influential_points
 
         state["curves"] = curve_fit.fit_all_curves(
             state["initial_ldfs"],
-            state["triangle"].get("dev_periods")
+            state["sml_flag"],
+            state["years_analyzed"],
+            settings["analysis_qtr"],
+            analysis_year=settings["analysis_year"],
+            analysis_val_flag=settings["analysis_val_flag"],
+            profile_id=profile_id,
         )
 
-        if state["curves"]:
-            print(f"  [{profile_id}] Curves fit: {len(state['curves'])} succeeded, "
-                  f"best R²={state['curves'][0].get('r_squared', 0):.4f}")
+        if not state["curves"]["r_squared"].empty:
+            best_rsq = state["curves"]["r_squared"].iloc[0]
+            print(f"  [{profile_id}] Curves fit — best: {best_rsq['Distribution']}, "
+                  f"R²={best_rsq['R_Squared']:.4f}")
 
 
         # ── Step 7: Compute factor indexes ───────────────────────────────
@@ -241,7 +248,13 @@ def run_profile(profile_id, all_profiles_data, vena_data, settings):
         # tree of curve-fit substitutions, pruned by constraints.
 
         state["iterations"] = iteration.run_iteration(
-            state["initial_ldfs"], state["curves"], settings
+            initial_ldfs=state["initial_ldfs"],
+            curve_fits=state["curves"]["curve_values"],
+            r_squared=state["curves"]["r_squared"],
+            first_index=settings.get("default_first_index", 1),
+            last_index=state["factor_one_idx"].get("factor_one_index",
+                           settings.get("default_last_index", 20)),
+            config=settings,
         )
 
         # Score all converged iterations by weighted RMSE and pick the best
