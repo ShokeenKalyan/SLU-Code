@@ -175,7 +175,11 @@ def run_profile(profile_id, all_profiles_data, vena_data, settings):
         # Computes VW average LDFs for multiple best-N windows.
 
         state["vw_averages"] = weighted_average.compute_all_vw_averages(
-            state["triangle"], state["outliers"], settings
+            state["triangle"]["triangle_cum"],
+            state["outliers"]["actuals_cum"],
+            settings["n_period_candidates"],
+            settings["years_analyzed"],
+            settings["analysis_qtr"],
         )
 
 
@@ -197,6 +201,58 @@ def run_profile(profile_id, all_profiles_data, vena_data, settings):
         )
 
         print(f"  [{profile_id}] Best-N selected: n={state['best_n_result'].get('best_n')}")
+
+
+        # ── Step 5b: Compute without-outlier-removal VW averages ────────
+        # R equivalent: Lines 797 of SLU_main_code.R
+        # R computes a second set of VW averages using the SAME best_n
+        # but with remove_outliers_flag='N' (all points included).
+
+        best_n = state["best_n_result"]["best_n"]
+
+        ldfs_wo = weighted_average.compute_weighted_average(
+            state["triangle"]["triangle_cum"],
+            state["outliers"]["actuals_cum"],
+            best_n,
+            state["years_analyzed"],
+            settings["analysis_qtr"],
+            remove_outliers=False,
+        )
+        cdfs_wo = weighted_average.compute_cdf_chain(ldfs_wo)
+        cum_pct_wo = weighted_average.compute_percent_developed(cdfs_wo)
+
+
+        # ── Step 5c: Build LDF dataframes ───────────────────────────────
+        # R equivalent: ldf_df construction (lines 817-828) + fn_avg_ldf_transform()
+        # (lines 1827-1870 of SLU_main_code.R)
+        # Builds two long-format dataframes:
+        #   ldf_df            — with outlier removal (the primary/selected version)
+        #   ldf_df_wo_outliers — without outlier removal
+
+        ldf_common = dict(
+            best_n=best_n,
+            sml_flag=state["sml_flag"],
+            years_analyzed=state["years_analyzed"],
+            analysis_qtr=settings["analysis_qtr"],
+            analysis_year=settings["analysis_year"],
+            analysis_val_flag=settings["analysis_val_flag"],
+            profile_id=profile_id,
+            ri_type="Gross",
+        )
+
+        state["ldf_df"] = weighted_average.build_ldf_dataframe(
+            ldfs=state["initial_ldfs"],
+            cdfs=state["initial_cdfs"],
+            cum_pct=state["initial_cum_pct"],
+            **ldf_common,
+        )
+
+        state["ldf_df_wo_outliers"] = weighted_average.build_ldf_dataframe(
+            ldfs=ldfs_wo,
+            cdfs=cdfs_wo,
+            cum_pct=cum_pct_wo,
+            **ldf_common,
+        )
 
 
         # ── Step 6: Fit parametric curves ────────────────────────────────
@@ -410,6 +466,8 @@ def combine_profile_results(successful_results):
         ("mbr_indexes_df",                          "factor_one_idx",    None),
         ("tail_factors_df",                         "tail_factor",       None),
         ("best_iter_final",                         "selected_ldfs",     None),
+        ("weighted_avg_ldf_df",                     "ldf_df",            None),
+        ("weighted_avg_ldf_wo_outliers_df",         "ldf_df_wo_outliers", None),
     ]
 
     for result_key, state_key, sub_key in keys_to_stack:
